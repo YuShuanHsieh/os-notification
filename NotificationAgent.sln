@@ -11,6 +11,12 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{AF5E5F88
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NotificationAgent.Core.Tests", "tests\NotificationAgent.Core.Tests\NotificationAgent.Core.Tests.csproj", "{D77E785C-5C95-41D6-8C7C-DE345E869421}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NotificationAgent.ConsoleHost", "src\NotificationAgent.ConsoleHost\NotificationAgent.ConsoleHost.csproj", "{6E7D9ADC-DB8D-4E9D-82DB-8463C84E0316}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{0A5A8CD5-3326-4500-9298-893278563737}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestPublisher", "tools\TestPublisher\TestPublisher.csproj", "{1F6408A0-8BC5-4783-A84A-4E90718646BE}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -28,9 +34,19 @@ Global
 		{D77E785C-5C95-41D6-8C7C-DE345E869421}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D77E785C-5C95-41D6-8C7C-DE345E869421}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D77E785C-5C95-41D6-8C7C-DE345E869421}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6E7D9ADC-DB8D-4E9D-82DB-8463C84E0316}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6E7D9ADC-DB8D-4E9D-82DB-8463C84E0316}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6E7D9ADC-DB8D-4E9D-82DB-8463C84E0316}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6E7D9ADC-DB8D-4E9D-82DB-8463C84E0316}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1F6408A0-8BC5-4783-A84A-4E90718646BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F6408A0-8BC5-4783-A84A-4E90718646BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F6408A0-8BC5-4783-A84A-4E90718646BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F6408A0-8BC5-4783-A84A-4E90718646BE}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{BDC2F7C1-F710-483C-AE4B-7B850A72D6EE} = {CCECE0C4-BDEA-4879-B90A-45C57D109445}
 		{D77E785C-5C95-41D6-8C7C-DE345E869421} = {AF5E5F88-EA8F-4C05-B46F-C8F02EC835A5}
+		{6E7D9ADC-DB8D-4E9D-82DB-8463C84E0316} = {CCECE0C4-BDEA-4879-B90A-45C57D109445}
+		{1F6408A0-8BC5-4783-A84A-4E90718646BE} = {0A5A8CD5-3326-4500-9298-893278563737}
 	EndGlobalSection
 EndGlobal
