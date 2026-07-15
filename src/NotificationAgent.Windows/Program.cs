@@ -1,0 +1,44 @@
+using System.Diagnostics;
+using Microsoft.Windows.AppNotifications;
+using NotificationAgent.Core.Hosting;
+using NotificationAgent.Core.Identity;
+using NotificationAgent.Windows;
+
+// One instance per interactive session: "Local\" mutexes are session-scoped,
+// so two signed-in users each get their own agent (design §2, ADR-001).
+using var singleInstance = new Mutex(initiallyOwned: true,
+    @"Local\DesktopNotificationAgent", out var isFirstInstance);
+if (!isFirstInstance) return;
+
+// Handle action-button clicks: only open well-formed http(s) URLs.
+AppNotificationManager.Default.NotificationInvoked += (_, invokedArgs) =>
+{
+    if (invokedArgs.Arguments.TryGetValue("url", out var url)
+        && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+    {
+        Process.Start(new ProcessStartInfo(uri.ToString()) { UseShellExecute = true });
+    }
+};
+AppNotificationManager.Default.Register();
+
+try
+{
+    var options = AgentOptions.FromEnvironment();
+    IIdentityProvider identity =
+        Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID") is { Length: > 0 } clientId
+            ? new MsalIdentityProvider(clientId,
+                Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID") ?? "organizations")
+            : new EnvironmentIdentityProvider();
+
+    await using var host = await AgentHost.StartAsync(options, identity, new WindowsToastRenderer());
+
+    var shutdown = new TaskCompletionSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.TrySetResult(); };
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => shutdown.TrySetResult();
+    await shutdown.Task;
+}
+finally
+{
+    AppNotificationManager.Default.Unregister();
+}
