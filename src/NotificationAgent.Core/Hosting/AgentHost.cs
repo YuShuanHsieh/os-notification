@@ -103,6 +103,7 @@ public sealed class AgentHost : IAsyncDisposable
         {
             try { await _subscription.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
+            catch { /* a faulted subscribe loop must not block shutdown (best-effort) */ }
         }
         await _pipeline.DisposeAsync().ConfigureAwait(false);
         await _aggregator.DisposeAsync().ConfigureAwait(false);
