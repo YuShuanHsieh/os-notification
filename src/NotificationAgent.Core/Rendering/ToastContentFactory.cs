@@ -12,6 +12,9 @@ public static class ToastContentFactory
             GraphemeText.Truncate(n.Message, MaxMessageGraphemes),
             n.SecondaryText, n.ActionLabel, n.ActionUrl, new[] { n });
 
+    /// <summary>Builds one summary toast from a bucket of events. The batch must be in
+    /// arrival order — the last element is treated as the latest event and supplies the
+    /// message, attribution, and action.</summary>
     public static ToastRequest FromBatch(IReadOnlyList<InboundNotification> batch)
     {
         if (batch.Count == 0) throw new ArgumentException("batch must not be empty", nameof(batch));
