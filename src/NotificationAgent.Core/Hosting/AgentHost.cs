@@ -63,19 +63,27 @@ public sealed class AgentHost : IAsyncDisposable
     {
         var identity = await identityProvider.GetIdentityAsync(ct).ConfigureAwait(false);
         var nats = new NatsConnection(new NatsOpts { Url = options.NatsUrl });
-        await nats.ConnectAsync().ConfigureAwait(false);
+        try
+        {
+            await nats.ConnectAsync().ConfigureAwait(false);
 
-        var telemetry = new NatsTelemetryPublisher(nats, options.AckSubject);
-        var dedup = new DeduplicationCache(capacity: 10_000, ttl: TimeSpan.FromMinutes(10));
-        var (pipeline, aggregator) = AgentPipelineFactory.Create(
-            new PipelineOptions(), new AggregatorOptions(), dedup,
-            renderer, telemetry, identity.DeviceId, TimeProvider.System);
-        pipeline.Start();
+            var telemetry = new NatsTelemetryPublisher(nats, options.AckSubject);
+            var dedup = new DeduplicationCache(capacity: 10_000, ttl: TimeSpan.FromMinutes(10));
+            var (pipeline, aggregator) = AgentPipelineFactory.Create(
+                new PipelineOptions(), new AggregatorOptions(), dedup,
+                renderer, telemetry, identity.DeviceId, TimeProvider.System);
+            pipeline.Start();
 
-        var subject = string.Format(options.SubjectTemplate, identity.UserId);
-        var host = new AgentHost(nats, pipeline, aggregator, subject);
-        host._subscription = Task.Run(() => host.SubscribeLoopAsync(host._cts.Token), CancellationToken.None);
-        return host;
+            var subject = string.Format(options.SubjectTemplate, identity.UserId);
+            var host = new AgentHost(nats, pipeline, aggregator, subject);
+            host._subscription = Task.Run(() => host.SubscribeLoopAsync(host._cts.Token), CancellationToken.None);
+            return host;
+        }
+        catch
+        {
+            await nats.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private async Task SubscribeLoopAsync(CancellationToken ct)
