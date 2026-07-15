@@ -55,8 +55,8 @@ public class EventPipelineTests
             new PipelineOptions(), new AggregatorOptions(),
             new DeduplicationCache(100, TimeSpan.FromMinutes(10)),
             renderer, telemetry, deviceId: "d-456", new FakeTimeProvider());
-        await using var _p = pipeline;
         await using var _a = aggregator;
+        await using var _p = pipeline;
         pipeline.Start();
 
         Assert.True(pipeline.TryEnqueue(CriticalEvent("evt-1")));
@@ -82,8 +82,8 @@ public class EventPipelineTests
             new PipelineOptions(), new AggregatorOptions(),
             new DeduplicationCache(100, TimeSpan.FromMinutes(10)),
             renderer, telemetry, "d-1", new FakeTimeProvider());
-        await using var _p = pipeline;
         await using var _a = aggregator;
+        await using var _p = pipeline;
         pipeline.Start();
 
         pipeline.TryEnqueue(CriticalEvent("evt-dup"));
