@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows Desktop Notification Agent — Core NATS Architecture</title>
+<style>
+:root{--bg:#f5f7fb;--surface:#fff;--text:#172033;--muted:#5e6b7f;--line:#d9e1ec;--accent:#2d63c8;--good:#16794b;--warn:#9a5b00;--danger:#a63535;--shadow:0 10px 28px rgba(25,39,70,.08)}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,system-ui,sans-serif;color:var(--text);background:var(--bg);line-height:1.6}
+header{background:linear-gradient(135deg,#1e3f8f,#4478db);color:#fff;padding:52px 24px}.wrap{max-width:1180px;margin:auto}
+h1{font-size:clamp(2rem,4vw,3.2rem);margin:0 0 10px}h2{margin-top:0}h3{margin-top:28px}
+.meta{display:flex;gap:18px;flex-wrap:wrap;margin-top:20px;font-size:.92rem;opacity:.9}
+main{padding:28px 20px 60px}.layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:24px}
+nav{position:sticky;top:16px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+nav a{display:block;padding:6px 8px;text-decoration:none;color:var(--muted);font-size:.9rem;border-radius:7px}
+nav a:hover{background:#eef3f9;color:var(--accent)}
+section{background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;margin-bottom:22px;box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;margin:14px 0}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}th{background:#f0f4fa}
+pre{background:#0f172a;color:#e7edf8;padding:16px;border-radius:12px;overflow:auto}code{font-family:Consolas,monospace}
+.callout{border-left:4px solid var(--accent);background:#eff5ff;padding:14px 16px;border-radius:8px;margin:14px 0}.good{border-color:var(--good);background:#eef9f4}.warn{border-color:var(--warn);background:#fff7e8}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.card{background:#eef3f9;border:1px solid var(--line);border-radius:12px;padding:16px}
+.diagram{border:1px solid var(--line);background:#fbfcfe;border-radius:14px;padding:14px;overflow:auto;margin:16px 0}.diagram svg{min-width:760px;width:100%;height:auto}
+.decision{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}.status{display:inline-block;padding:3px 8px;border-radius:999px;background:#e8f6ee;color:var(--good);font-size:.78rem;font-weight:700}
+@media(max-width:900px){.layout{grid-template-columns:1fr}nav{position:static}.grid3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+<h1>Windows Desktop Notification Agent</h1>
+<p>Core NATS best-effort architecture for online-only Windows 11 toast notifications with acknowledgement-based latency tracing.</p>
+<div class="meta"><span>Format: arc42-inspired</span><span>Transport: Core NATS</span><span>Delivery: at-most-once</span><span>Target: Windows 11</span></div>
+</div></header>
+
+<main><div class="wrap layout">
+<nav>
+<strong>Contents</strong>
+<a href="#goals">1. Goals</a>
+<a href="#constraints">2. Constraints</a>
+<a href="#context">3. Context</a>
+<a href="#strategy">4. Solution strategy</a>
+<a href="#blocks">5. Building blocks</a>
+<a href="#runtime">6. Runtime views</a>
+<a href="#payload">7. Payload</a>
+<a href="#auth">8. Authentication</a>
+<a href="#performance">9. Performance</a>
+<a href="#delivery">10. Delivery and tracing</a>
+<a href="#roadmap">11. Delivery roadmap</a>
+<a href="#decisions">12. Decisions</a>
+<a href="#quality">13. Quality and risks</a>
+</nav>
+
+<article>
+<section id="goals">
+<h2>1. Introduction and goals</h2>
+<p>A non-elevated per-user Windows agent starts after user sign-in, authenticates, subscribes to a user-scoped Core NATS subject, aggregates incoming events, and displays actionable Windows toast notifications.</p>
+<div class="grid3">
+<div class="card"><h3>Primary goal</h3><p>Deliver low-latency notifications to users who are currently online.</p></div>
+<div class="card"><h3>Observability goal</h3><p>Measure latency only for events acknowledged by an agent.</p></div>
+<div class="card"><h3>Non-goal</h3><p>No offline queue, no guaranteed delivery, and no user presence service.</p></div>
+</div>
+</section>
+
+<section id="constraints">
+<h2>2. Architecture constraints</h2>
+<ul>
+<li>The agent runs in the signed-in user's interactive session and is non-elevated.</li>
+<li>Core NATS provides at-most-once, best-effort delivery.</li>
+<li>Messages published while no matching subscriber exists are intentionally discarded.</li>
+<li>The backend must never claim that a successful publish means the toast was delivered.</li>
+<li>The agent must use bounded queues and fixed concurrency.</li>
+<li>The Windows account name is not a durable application identity.</li>
+</ul>
+<div class="callout warn"><strong>Delivery contract:</strong> online-only, at-most-once, best-effort. Offline loss is an accepted product decision.</div>
+</section>
+
+<section id="context">
+<h2>3. System context</h2>
+<div class="diagram">
+<svg viewBox="0 0 1050 440" aria-label="Context diagram">
+<defs><marker id="a1" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#49688f"/></marker></defs>
+<rect x="40" y="150" width="180" height="100" rx="16" fill="#eef3f9" stroke="#8aa0bd"/>
+<text x="130" y="190" text-anchor="middle" font-size="20" font-weight="700">Trusted app</text><text x="130" y="220" text-anchor="middle">Sends request</text>
+<rect x="285" y="120" width="190" height="160" rx="16" fill="#e9f0ff" stroke="#5f7fc4"/>
+<text x="380" y="160" text-anchor="middle" font-size="20" font-weight="700">Notification service</text>
+<text x="380" y="190" text-anchor="middle">Authenticates producer</text><text x="380" y="215" text-anchor="middle">Normalizes payload</text><text x="380" y="240" text-anchor="middle">Publishes event</text>
+<rect x="540" y="145" width="170" height="110" rx="16" fill="#fff4df" stroke="#c99945"/>
+<text x="625" y="185" text-anchor="middle" font-size="20" font-weight="700">Core NATS</text><text x="625" y="215" text-anchor="middle">Online subscribers only</text>
+<rect x="775" y="90" width="230" height="220" rx="16" fill="#eef8f3" stroke="#5a9b79"/>
+<text x="890" y="130" text-anchor="middle" font-size="20" font-weight="700">DesktopAgent.exe</text>
+<text x="890" y="160" text-anchor="middle">Deserialize · deduplicate</text><text x="890" y="185" text-anchor="middle">Aggregate · prioritize</text><text x="890" y="210" text-anchor="middle">Render Windows toast</text><text x="890" y="235" text-anchor="middle">Publish telemetry ack</text>
+<line x1="220" y1="200" x2="285" y2="200" stroke="#49688f" stroke-width="3" marker-end="url(#a1)"/>
+<line x1="475" y1="200" x2="540" y2="200" stroke="#49688f" stroke-width="3" marker-end="url(#a1)"/>
+<line x1="710" y1="200" x2="775" y2="200" stroke="#49688f" stroke-width="3" marker-end="url(#a1)"/>
+<line x1="890" y1="310" x2="380" y2="310" stroke="#49688f" stroke-width="3" marker-end="url(#a1)"/>
+<text x="635" y="335" text-anchor="middle">acknowledgement / latency telemetry</text>
+</svg>
+</div>
+</section>
+
+<section id="strategy">
+<h2>4. Solution strategy</h2>
+<ol>
+<li>Start one agent per signed-in Windows session.</li>
+<li>Authenticate with WAM/MSAL and resolve an immutable application user ID.</li>
+<li>Subscribe to <code>notify.user.{userId}.desktop</code>.</li>
+<li>Use Core NATS normal subscription for live fan-out to all active sessions.</li>
+<li>Aggregate and prioritize locally before calling the Windows API.</li>
+<li>Publish a lightweight acknowledgement after receive and toast submission.</li>
+</ol>
+</section>
+
+<section id="blocks">
+<h2>5. Building blocks</h2>
+<table>
+<thead><tr><th>Component</th><th>Responsibility</th></tr></thead>
+<tbody>
+<tr><td>Bootstrap</td><td>Start at logon, enforce one instance per session, register Windows App SDK notifications.</td></tr>
+<tr><td>Identity client</td><td>Obtain application user ID, device ID, and restricted NATS credentials.</td></tr>
+<tr><td>Core NATS subscriber</td><td>Maintain the live subscription and hand events to a bounded channel.</td></tr>
+<tr><td>Event intake</td><td>Deserialize server-approved events, perform basic structural checks, and consult local deduplication state.</td></tr>
+<tr><td>Aggregator</td><td>Own priority handling, batching, and latest-state replacement for progress/state events.</td></tr>
+<tr><td>Renderer</td><td>Build and submit Windows App SDK notifications.</td></tr>
+<tr><td>Telemetry publisher</td><td>Publish <code>observed_by_agent</code> and <code>submitted_to_windows</code> acknowledgements.</td></tr>
+<tr><td>Local state</td><td>Maintain bounded deduplication and aggregation state.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="runtime">
+<h2>6. Runtime views</h2>
+<h3>6.1 Online delivery</h3>
+<pre><code>Trusted app
+  → Notification service
+  → Core NATS publish
+  → Active agent receives event
+  → Event intake deserializes and deduplicates
+  → Aggregator prioritizes / batches / replaces
+  → Renderer calls AppNotificationManager.Show()
+  → Agent publishes acknowledgement telemetry</code></pre>
+
+<h3>6.2 Offline behavior</h3>
+<pre><code>No active subscriber
+  → Core NATS accepts publication
+  → No agent receives the event
+  → Event is permanently discarded
+  → No acknowledgement arrives
+  → Backend marks trace record as unobserved after timeout</code></pre>
+
+<h3>6.3 Burst handling</h3>
+<pre><code>Receive event
+  → bounded queue
+  → duplicate?
+      yes → discard locally
+  → send to Aggregator
+  → critical → render immediately
+  → important → higher-priority batch
+  → normal → standard batch
+  → progress/state → replace latest value
+  → render only when needed</code></pre>
+</section>
+
+<section id="payload">
+<h2>7. Notification payload</h2>
+<pre><code>{
+  "schemaVersion": "1.0",
+  "eventId": "evt-12345",
+  "notificationType": "billing.invoice.ready",
+  "target": { "userId": "u_7f92a845" },
+  "content": {
+    "title": "Invoice ready",
+    "message": "Invoice INV-8492 is ready for review.",
+    "secondaryText": "Contoso Billing"
+  },
+  "action": {
+    "label": "View invoice",
+    "url": "https://app.example.com/invoices/8492"
+  },
+  "classification": {
+    "priority": "normal",
+    "aggregationKey": "billing.invoice.ready",
+    "deduplicationKey": "invoice.ready:8492",
+    "replaceable": false
+  },
+  "timestamps": {
+    "producerCreatedAt": "2026-07-15T08:30:00.100Z",
+    "serverPublishedAt": "2026-07-15T08:30:00.150Z"
+  }
+}</code></pre>
+
+<h3>Windows payload limits</h3>
+<table>
+<thead><tr><th>Field</th><th>Limit</th></tr></thead>
+<tbody>
+<tr><td>Complete serialized notification XML</td><td>Maximum 5 KB; target 4,800 bytes.</td></tr>
+<tr><td>Top-level text elements</td><td>Maximum 3.</td></tr>
+<tr><td>Buttons</td><td>Maximum 5; product recommendation 1–2.</td></tr>
+<tr><td>Tag/group</td><td>Maximum 64 characters each.</td></tr>
+<tr><td>Title</td><td>Product limit: 120 grapheme clusters.</td></tr>
+<tr><td>Message</td><td>Product limit: 500 grapheme clusters.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="auth">
+<h2>8. Authentication and authorization</h2>
+<pre><code>Windows sign-in
+  → WAM/MSAL silent token
+  → Backend validates signature, issuer, audience, expiry, tenant, scope
+  → Backend resolves applicationUserId and deviceId
+  → Backend issues restricted NATS credential
+  → Agent subscribes only to its assigned subject</code></pre>
+<p>The Windows username may be diagnostic metadata but is never trusted as proof of identity.</p>
+</section>
+
+<section id="performance">
+<h2>9. Performance and resource protection</h2>
+<table>
+<thead><tr><th>Control</th><th>Baseline</th></tr></thead>
+<tbody>
+<tr><td>Bounded channel</td><td>500 events</td></tr>
+<tr><td>Worker count</td><td>2</td></tr>
+<tr><td>Maximum event payload</td><td>32 KB</td></tr>
+<tr><td>Maximum JSON depth</td><td>16</td></tr>
+<tr><td>Active aggregate buckets</td><td>100</td></tr>
+<tr><td>Memory soft/hard threshold</td><td>150 MB / 250 MB</td></tr>
+<tr><td>Local database maximum</td><td>100 MB</td></tr>
+</tbody>
+</table>
+<div class="callout warn">Because delivery is best-effort, overload handling may drop events rather than grow memory without bound.</div>
+</section>
+
+<section id="delivery">
+<h2>10. Delivery semantics and latency tracing</h2>
+<table>
+<thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>published</code></td><td>The notification service successfully published to Core NATS.</td></tr>
+<tr><td><code>observed_by_agent</code></td><td>An agent received and accepted the event.</td></tr>
+<tr><td><code>submitted_to_windows</code></td><td>The agent submitted the toast to Windows.</td></tr>
+<tr><td><code>unobserved</code></td><td>No acknowledgement arrived before timeout. Cause is unknown.</td></tr>
+</tbody>
+</table>
+
+<h3>Acknowledgement payload</h3>
+<pre><code>{
+  "eventId": "evt-12345",
+  "deviceId": "d-456",
+  "agentReceivedAt": "2026-07-15T08:30:00.190Z",
+  "toastSubmittedAt": "2026-07-15T08:30:00.205Z",
+  "status": "submitted_to_windows"
+}</code></pre>
+
+<h3>Latency calculations</h3>
+<pre><code>Messaging latency
+= agentReceivedAt - serverPublishedAt
+
+Agent processing latency
+= toastSubmittedAt - agentReceivedAt
+
+Observed end-to-end latency
+= toastSubmittedAt - producerCreatedAt</code></pre>
+
+<p>Latency percentiles include only acknowledged events. Unobserved publications affect the observation rate, not the latency distribution.</p>
+<pre><code>agent observation rate
+= acknowledged / published</code></pre>
+</section>
+
+<section id="roadmap">
+<h2>11. Delivery roadmap</h2>
+<h3>Phase 1 — POC</h3>
+<ul>
+<li>Per-user agent and local toast.</li>
+<li>WAM/MSAL authentication.</li>
+<li>Core NATS subscription.</li>
+<li>One producer request and one action button.</li>
+<li>In-memory deduplication and basic aggregation.</li>
+<li>Local structured logs.</li>
+</ul>
+
+<h3>Phase 2 — Reliability and observability</h3>
+<ul>
+<li>Bounded channel and fixed worker pool.</li>
+<li>Persistent deduplication and aggregation state.</li>
+<li>Telemetry acknowledgements and latency dashboards.</li>
+<li>Credential refresh and revocation.</li>
+<li>Resource guardrails and clean restart behavior.</li>
+</ul>
+
+<h3>Phase 3 — Enhancements</h3>
+<ul>
+<li>Server-side producer validation and rate limiting.</li>
+<li>User category preferences.</li>
+<li>Localization and richer notification templates.</li>
+<li>Advanced multi-device/session routing.</li>
+<li>Fleet health, feature flags, and synthetic probes.</li>
+</ul>
+</section>
+
+<section id="decisions">
+<h2>12. Architecture decisions</h2>
+<div class="decision"><strong>ADR-001</strong><div><span class="status">Accepted</span><br>Use a per-user non-elevated agent.</div></div>
+<div class="decision"><strong>ADR-002</strong><div><span class="status">Accepted</span><br>Use Windows App SDK notifications.</div></div>
+<div class="decision"><strong>ADR-003</strong><div><span class="status">Accepted</span><br>Use Core NATS for online-only at-most-once delivery.</div></div>
+<div class="decision"><strong>ADR-004</strong><div><span class="status">Accepted</span><br>Do not create a presence service.</div></div>
+<div class="decision"><strong>ADR-005</strong><div><span class="status">Accepted</span><br>Do not retain events for offline users.</div></div>
+<div class="decision"><strong>ADR-006</strong><div><span class="status">Accepted</span><br>Use acknowledgement telemetry to measure observation and latency.</div></div>
+<div class="decision"><strong>ADR-007</strong><div><span class="status">Accepted</span><br>Merge priority handling into the Aggregator.</div></div>
+<div class="decision"><strong>ADR-008</strong><div><span class="status">Accepted</span><br>Move server-side validator and rate limiter to Phase 3.</div></div>
+</section>
+
+<section id="quality">
+<h2>13. Quality requirements and risks</h2>
+<table>
+<thead><tr><th>Scenario</th><th>Expected outcome</th></tr></thead>
+<tbody>
+<tr><td>User is offline</td><td>Message is discarded and later classified as unobserved.</td></tr>
+<tr><td>10,000 events arrive in one minute</td><td>Memory remains bounded and most normal events are aggregated or dropped under overload.</td></tr>
+<tr><td>Agent reconnects</td><td>Only future live events are received.</td></tr>
+<tr><td>NATS publish succeeds</td><td>Status is published, never delivered.</td></tr>
+<tr><td>Agent acknowledgement arrives</td><td>Latency is included in p50/p95/p99 calculations.</td></tr>
+</tbody>
+</table>
+
+<h3>Primary risks</h3>
+<table>
+<thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td>Offline event loss</td><td>Accept explicitly and reserve the channel for ephemeral notifications.</td></tr>
+<tr><td>Missing acknowledgement</td><td>Classify as unobserved without inferring a specific cause.</td></tr>
+<tr><td>Notification overload</td><td>Bounded queue, priority-aware aggregation, and server-side rate limiting in Phase 3.</td></tr>
+<tr><td>Windows suppresses toast</td><td>Report only submitted-to-Windows, not user-visible delivery.</td></tr>
+</tbody>
+</table>
+</section>
+</article></div></main>
+</body></html>
