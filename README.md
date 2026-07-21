@@ -44,7 +44,7 @@ IToastRenderer ──► ack: submitted_to_windows ──► NATS notify.ack.des
 |---|---|---|
 | `src/NotificationAgent.Core` | `net10.0` | The entire pipeline: parsing, dedup, aggregation, toast content, telemetry, hosting. No Windows dependencies. |
 | `src/NotificationAgent.ConsoleHost` | `net10.0` | Dev head for Linux: renders "toasts" to the console. |
-| `src/NotificationAgent.Windows` | `net10.0-windows10.0.19041.0` | Production head: Windows App SDK toasts (`AppNotificationBuilder`), MSAL/WAM identity, single-instance mutex. **Not in the solution file** — built separately on Windows. |
+| `src/NotificationAgent.Windows` | `net10.0-windows10.0.19041.0` | Production head: Windows Community Toolkit toasts, MSAL/WAM identity, single-instance mutex. **Not in the solution file** — compiled separately; execution is Windows-only. |
 | `tools/TestPublisher` | `net10.0` | Publishes test events and prints acks; stands in for the backend. |
 | `tests/NotificationAgent.Core.Tests` | `net10.0` | xUnit suite (uses `FakeTimeProvider` for all timing) plus a NATS integration test that skips itself when no server is on `localhost:4222`. |
 
@@ -83,6 +83,13 @@ dotnet test
 
 The solution (`NotificationAgent.sln`) contains Core, Core.Tests, ConsoleHost, and TestPublisher, so build/test stay green on Linux. The integration tests in `NatsIntegrationTests.cs` run only when a NATS server is reachable on `localhost:4222` and skip politely otherwise.
 
+The Windows head and its notification-content tests are intentionally excluded from the cross-platform solution. They can still be compiled and tested with the standalone .NET 10 SDK on Linux or WSL:
+
+```bash
+dotnet build src/NotificationAgent.Windows
+dotnet test tests/NotificationAgent.Windows.Tests
+```
+
 ### Configuration (environment variables)
 
 | Variable | Default | Used by |
@@ -118,7 +125,7 @@ The agent prints an `observed_by_agent` ack per event immediately, batches the t
 
 ### Windows head
 
-`NotificationAgent.Windows` is deliberately excluded from the solution; build and run it on a Windows 11 machine:
+`NotificationAgent.Windows` is deliberately excluded from the solution. It can be compiled on Linux, WSL, or Windows with the standalone .NET 10 SDK, but it can only run and display notifications on Windows 10/11:
 
 ```powershell
 dotnet build src/NotificationAgent.Windows
@@ -131,7 +138,7 @@ $env:NOTIFY_USER_ID = "u_demo"
 dotnet run --project src/NotificationAgent.Windows
 ```
 
-It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, registers with `AppNotificationManager`, and opens the toast's action URL in the default browser (http/https only) when clicked.
+It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `CommunityToolkit.WinUI.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It has no additional notification runtime dependency.
 
 ## Development
 

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing `IToastRenderer` boundary and `ToastRequest` data contract. Isolate toolkit XML construction in an internal factory, submit through `ToastNotificationManagerCompat`, and test payload construction without displaying a Windows notification.
 
-**Tech Stack:** .NET 10, CommunityToolkit.WinUI.Notifications 7.1.2, Windows toast notifications, xUnit
+**Tech Stack:** .NET 10, CommunityToolkit.WinUI.Notifications 7.1.2, System.Drawing.Common 10.0.10 security override, Windows toast notifications, xUnit
 
 ---
 
@@ -142,6 +142,8 @@ Add:
 
 ```xml
 <PackageReference Include="CommunityToolkit.WinUI.Notifications" Version="7.1.2" />
+<!-- Override the toolkit's vulnerable System.Drawing.Common 4.7.0 dependency. -->
+<PackageReference Include="System.Drawing.Common" Version="10.0.10" />
 ```
 
 Keep `TargetFramework`, `RuntimeIdentifiers`, `Nullable`, `ImplicitUsings`, and `EnableWindowsTargeting` unchanged.
