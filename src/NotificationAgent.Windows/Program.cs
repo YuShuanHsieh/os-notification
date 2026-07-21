@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.Windows.AppNotifications;
 using NotificationAgent.Core.Hosting;
 using NotificationAgent.Core.Identity;
@@ -10,16 +9,6 @@ using var singleInstance = new Mutex(initiallyOwned: true,
     @"Local\DesktopNotificationAgent", out var isFirstInstance);
 if (!isFirstInstance) return;
 
-// Handle action-button clicks: only open well-formed http(s) URLs.
-AppNotificationManager.Default.NotificationInvoked += (_, invokedArgs) =>
-{
-    if (invokedArgs.Arguments.TryGetValue("url", out var url)
-        && Uri.TryCreate(url, UriKind.Absolute, out var uri)
-        && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
-    {
-        Process.Start(new ProcessStartInfo(uri.ToString()) { UseShellExecute = true });
-    }
-};
 AppNotificationManager.Default.Register();
 
 try

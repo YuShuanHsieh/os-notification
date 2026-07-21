@@ -17,11 +17,12 @@ public sealed class WindowsToastRenderer : IToastRenderer
         if (!string.IsNullOrEmpty(toast.Attribution))
             builder.SetAttributionText(toast.Attribution);
 
-        if (toast.ActionLabel is not null && toast.ActionUrl is not null)
+        if (toast.ActionLabel is not null
+            && ActionUrlPolicy.TryCreate(toast.ActionUrl, out var actionUri))
         {
-            builder.AddButton(new AppNotificationButton(toast.ActionLabel)
-                .AddArgument("action", "open")
-                .AddArgument("url", toast.ActionUrl));
+            builder.AddButton(
+                new AppNotificationButton(toast.ActionLabel)
+                    .SetInvokeUri(actionUri));
         }
 
         var notification = builder.BuildNotification();
