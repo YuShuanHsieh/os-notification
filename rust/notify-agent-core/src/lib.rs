@@ -1,3 +1,4 @@
+pub mod aggregator;
 pub mod dedup;
 pub mod grapheme;
 pub mod model;

@@ -59,7 +59,7 @@ pub fn from_batch(batch: &[InboundNotification]) -> ToastRequest {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::{InboundNotification, Priority};
     use unicode_segmentation::UnicodeSegmentation;
