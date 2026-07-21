@@ -87,6 +87,10 @@ impl Pipeline {
         self.dropped_queue_full.load(Ordering::Relaxed)
     }
 
+    pub fn intake_handle(&self) -> IntakeHandle {
+        IntakeHandle { tx: self.tx.clone(), dropped_queue_full: self.dropped_queue_full.clone() }
+    }
+
     /// Close the intake and let workers drain every queued event (spec §5.2:
     /// bounded work — at most queue_capacity events — so no timeout needed here;
     /// the render drain timeout lives in Aggregator::shutdown).
@@ -94,6 +98,25 @@ impl Pipeline {
         drop(self.tx);
         for w in self.workers {
             let _ = w.await;
+        }
+    }
+}
+
+/// Cloneable enqueue-only handle for producer tasks.
+#[derive(Clone)]
+pub struct IntakeHandle {
+    tx: mpsc::Sender<ReceivedEvent>,
+    dropped_queue_full: Arc<AtomicU64>,
+}
+
+impl IntakeHandle {
+    pub fn try_enqueue(&self, evt: ReceivedEvent) -> bool {
+        match self.tx.try_send(evt) {
+            Ok(()) => true,
+            Err(_) => {
+                self.dropped_queue_full.fetch_add(1, Ordering::Relaxed);
+                false
+            }
         }
     }
 }
