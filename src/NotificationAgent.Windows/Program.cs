@@ -1,4 +1,3 @@
-using Microsoft.Windows.AppNotifications;
 using NotificationAgent.Core.Hosting;
 using NotificationAgent.Core.Identity;
 using NotificationAgent.Windows;
@@ -9,25 +8,16 @@ using var singleInstance = new Mutex(initiallyOwned: true,
     @"Local\DesktopNotificationAgent", out var isFirstInstance);
 if (!isFirstInstance) return;
 
-AppNotificationManager.Default.Register();
+var options = AgentOptions.FromEnvironment();
+IIdentityProvider identity =
+    Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID") is { Length: > 0 } clientId
+        ? new MsalIdentityProvider(clientId,
+            Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID") ?? "organizations")
+        : new EnvironmentIdentityProvider();
 
-try
-{
-    var options = AgentOptions.FromEnvironment();
-    IIdentityProvider identity =
-        Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID") is { Length: > 0 } clientId
-            ? new MsalIdentityProvider(clientId,
-                Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID") ?? "organizations")
-            : new EnvironmentIdentityProvider();
+await using var host = await AgentHost.StartAsync(options, identity, new WindowsToastRenderer());
 
-    await using var host = await AgentHost.StartAsync(options, identity, new WindowsToastRenderer());
-
-    var shutdown = new TaskCompletionSource();
-    Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.TrySetResult(); };
-    AppDomain.CurrentDomain.ProcessExit += (_, _) => shutdown.TrySetResult();
-    await shutdown.Task;
-}
-finally
-{
-    AppNotificationManager.Default.Unregister();
-}
+var shutdown = new TaskCompletionSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.TrySetResult(); };
+AppDomain.CurrentDomain.ProcessExit += (_, _) => shutdown.TrySetResult();
+await shutdown.Task;
