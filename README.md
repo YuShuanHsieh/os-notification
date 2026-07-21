@@ -12,7 +12,7 @@ This repository is the Phase-1 POC of the agent only. The notification-service b
 
 ## High-level architecture
 
-All logic lives in a cross-platform .NET 8 core library behind two small interfaces (`IToastRenderer`, `IIdentityProvider`), so the whole pipeline is unit-testable on Linux. Two thin "heads" consume it: a console host for Linux development and the real Windows head.
+All logic lives in a cross-platform .NET 10 core library behind two small interfaces (`IToastRenderer`, `IIdentityProvider`), so the whole pipeline is unit-testable on Linux. Two thin "heads" consume it: a console host for Linux development and the real Windows head.
 
 ```
 NATS  notify.user.{userId}.desktop
@@ -42,11 +42,11 @@ IToastRenderer ──► ack: submitted_to_windows ──► NATS notify.ack.des
 
 | Project | Target | Role |
 |---|---|---|
-| `src/NotificationAgent.Core` | `net8.0` | The entire pipeline: parsing, dedup, aggregation, toast content, telemetry, hosting. No Windows dependencies. |
-| `src/NotificationAgent.ConsoleHost` | `net8.0` | Dev head for Linux: renders "toasts" to the console. |
-| `src/NotificationAgent.Windows` | `net8.0-windows10.0.19041.0` | Production head: Windows App SDK toasts (`AppNotificationBuilder`), MSAL/WAM identity, single-instance mutex. **Not in the solution file** — built separately on Windows. |
-| `tools/TestPublisher` | `net8.0` | Publishes test events and prints acks; stands in for the backend. |
-| `tests/NotificationAgent.Core.Tests` | `net8.0` | xUnit suite (uses `FakeTimeProvider` for all timing) plus a NATS integration test that skips itself when no server is on `localhost:4222`. |
+| `src/NotificationAgent.Core` | `net10.0` | The entire pipeline: parsing, dedup, aggregation, toast content, telemetry, hosting. No Windows dependencies. |
+| `src/NotificationAgent.ConsoleHost` | `net10.0` | Dev head for Linux: renders "toasts" to the console. |
+| `src/NotificationAgent.Windows` | `net10.0-windows10.0.19041.0` | Production head: Windows App SDK toasts (`AppNotificationBuilder`), MSAL/WAM identity, single-instance mutex. **Not in the solution file** — built separately on Windows. |
+| `tools/TestPublisher` | `net10.0` | Publishes test events and prints acks; stands in for the backend. |
+| `tests/NotificationAgent.Core.Tests` | `net10.0` | xUnit suite (uses `FakeTimeProvider` for all timing) plus a NATS integration test that skips itself when no server is on `localhost:4222`. |
 
 ### Identity
 
@@ -63,10 +63,10 @@ Inbound events must match the design §7 JSON shape (`schemaVersion`, `eventId`,
 
 ### Prerequisites
 
-- **.NET 8 SDK** — if not installed:
+- **.NET 10 SDK** — if not installed:
   ```bash
   curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-  bash /tmp/dotnet-install.sh --channel 8.0
+  bash /tmp/dotnet-install.sh --channel 10.0
   export PATH="$HOME/.dotnet:$PATH"   # add to your shell profile
   ```
 - **NATS server** — easiest via Docker:
