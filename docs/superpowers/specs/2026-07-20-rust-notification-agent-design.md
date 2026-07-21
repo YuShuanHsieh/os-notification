@@ -78,11 +78,11 @@ Dedup cache is hand-rolled (~80 lines), porting the review-proven C# semantics e
 - **AUMID self-registration:** first run writes `HKCU\Software\Classes\AppUserModelId\NotifyAgent.Rust` (`DisplayName` = "Desktop Notification Agent (Rust)"), per-user, no elevation — the unpackaged-app substitute for WinAppSDK's `Register()`. Toasts via `ToastNotificationManager::CreateToastNotifierWithId(aumid)` and hand-built toast XML: ≤3 text elements (title, message, attribution), 1 action button with the URL as activation argument.
 - **Activation:** `Activated` event on each `ToastNotification` while the process runs → parse argument, require absolute `http`/`https` URL → `ShellExecuteW`. Post-exit action-center activation (COM activator) is out of scope, matching the C# POC.
 - **Single instance:** `CreateMutexW` on `Local\NotifyAgentRust` — deliberately distinct from the C# mutex so the two heads can be compared side by side; docs warn to run only one per user in normal use (both would toast the same events).
-- **Device id:** same file as C# — `%LOCALAPPDATA%\DesktopNotificationAgent\device-id` — so acks correlate to one stable device id regardless of which agent runs.
+- **Device id:** in OIDC (signed-in) mode, same file as C# — `%LOCALAPPDATA%\DesktopNotificationAgent\device-id` — so acks correlate to one stable device id regardless of which agent runs. In env-identity mode the default is hostname-derived (`d-{hostname}`), matching the C# `EnvironmentIdentityProvider` exactly. (Amended 2026-07-21 after final review: the original sentence claimed the file applied to both paths, contradicting the C# reference this spec designates as the parity target.)
 
 ## Identity
 
-Selection logic identical to C# `Program.cs`: `NOTIFY_AAD_CLIENT_ID` set → OIDC device-code flow (`NOTIFY_AAD_TENANT_ID` defaults to `organizations`); otherwise `EnvIdentity` (`NOTIFY_USER_ID` required, `NOTIFY_DEVICE_ID` optional, default `d-{hostname-lowercase}` on Linux / device-id file on Windows).
+Selection logic identical to C# `Program.cs`: `NOTIFY_AAD_CLIENT_ID` set → OIDC device-code flow (`NOTIFY_AAD_TENANT_ID` defaults to `organizations`); otherwise `EnvIdentity` (`NOTIFY_USER_ID` required, `NOTIFY_DEVICE_ID` optional, default `d-{hostname-lowercase}` — on all platforms, matching C#; the Windows device-id file is used by the device-code path only).
 
 Device-code flow (hand-rolled on reqwest, 2 endpoints):
 1. POST `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode` (`client_id`, `scope=openid profile`).
