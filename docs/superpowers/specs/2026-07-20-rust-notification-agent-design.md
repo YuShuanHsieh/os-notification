@@ -104,7 +104,7 @@ Best-effort, identical to C# where wire-visible: invalid payloads and duplicates
 
 ## Build & toolchain
 
-- `rustup` installed to `~/.cargo` (no root). Stable toolchain.
+- Rust **1.96.1**, pinned via `rust/rust-toolchain.toml` (`channel = "1.96.1"`) so every build — local, cross, CI — uses the same compiler. `rustup` installed to `~/.cargo` (no root).
 - Linux dev loop: `cargo build && cargo test` in `rust/` — always green (Windows crate is a stub off-Windows).
 - Windows artifact from Linux: `rustup target add x86_64-pc-windows-gnu` + `mingw-w64` (apt, sudo believed available — the plan must verify; fallback if no root: `cargo check --target x86_64-pc-windows-gnu` still gives full type-checking of the Windows crate, and the exe builds on any Windows box or CI runner). Output: single static `notify-agent-windows.exe`, no runtime prerequisites.
 
