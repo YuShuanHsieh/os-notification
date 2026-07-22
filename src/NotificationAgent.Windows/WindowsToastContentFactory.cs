@@ -15,7 +15,7 @@ internal static class WindowsToastContentFactory
             builder.AddAttributionText(toast.Attribution);
 
         if (!string.IsNullOrWhiteSpace(toast.ActionLabel)
-            && ActionUrlPolicy.TryCreate(toast.ActionUrl, out var actionUri))
+            && HttpsUrlPolicy.TryCreate(toast.ActionUrl, out var actionUri))
         {
             builder.AddButton(new ToastButton()
                 .SetContent(toast.ActionLabel)
