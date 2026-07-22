@@ -102,10 +102,23 @@ dotnet test tests/NotificationAgent.Windows.Tests
 | `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | all hosts + TestPublisher |
 | `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | agent hosts |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | agent hosts + TestPublisher |
+| `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | Both hosts: path to a NATS `.creds` file |
+| `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | Windows: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
+| `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | Windows: AAD scope requested when calling the auth service |
 | `NOTIFY_USER_ID` | *(required in dev)* | `EnvironmentIdentityProvider` |
 | `NOTIFY_DEVICE_ID` | `d-{machinename}` | `EnvironmentIdentityProvider` |
 | `NOTIFY_AAD_CLIENT_ID` | *(unset → env identity)* | Windows head: enables MSAL/WAM |
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | Windows head (with client ID) |
+
+`NOTIFY_NATS_URL` also accepts a `wss://` (NATS WebSocket) URL — the NATS client
+detects the transport from the URL scheme automatically, so no other configuration
+is needed to connect through a WebSocket-terminating load balancer or reverse proxy.
+
+NATS auth is selected presence-based, same style as identity: on Windows,
+`NOTIFY_NATS_AUTH_SERVICE_URL` (requires `NOTIFY_AAD_CLIENT_ID` and
+`NOTIFY_NATS_AUTH_SERVICE_SCOPE`) takes priority over `NOTIFY_NATS_CREDS_FILE`,
+which both hosts support; if neither is set, the connection is unauthenticated
+(today's default).
 
 ## How to use
 

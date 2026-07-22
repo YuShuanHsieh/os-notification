@@ -7,6 +7,9 @@
 | `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | Both hosts and TestPublisher |
 | `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | Agent hosts |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | Agent hosts and TestPublisher |
+| `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | Both hosts: path to a NATS `.creds` file |
+| `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | Windows: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
+| `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | Windows: AAD scope requested when calling the auth service |
 | `NOTIFY_USER_ID` | Required for environment identity | ConsoleHost; Windows fallback identity |
 | `NOTIFY_DEVICE_ID` | `d-{lowercase machine name}` | Environment identity |
 | `NOTIFY_AAD_CLIENT_ID` | Unset | Windows; when set, selects MSAL/WAM identity |
@@ -31,6 +34,15 @@ window and prints ack payloads.
 The console renderer prints URLs without applying `HttpsUrlPolicy`; it is a
 visibility aid only. Windows content construction is the authoritative URL safety
 boundary for displayed images and launched actions.
+
+## NATS Authentication
+
+`AgentHost.StartAsync`'s optional `INatsAuthProvider` (from `NotificationAgent.Core.Nats`)
+owns auth configuration: `CredsFileNatsAuthProvider` (Core, both hosts) wraps a `.creds`
+file; `ExternalAuthServiceNatsAuthProvider` (Windows only) calls an external HTTPS auth
+service, reusing the AAD token already acquired via `MsalIdentityProvider` for a second,
+separately configured scope. `NotificationAgent.Windows/NatsAuthSelection.cs` owns the
+presence-based selection between them at startup.
 
 ## Windows runtime
 
