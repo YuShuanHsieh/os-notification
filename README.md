@@ -57,7 +57,7 @@ The Windows account name is never used as identity. `IIdentityProvider` resolves
 
 ### Wire contracts
 
-Inbound events must match the design §7 JSON shape (`schemaVersion`, `eventId`, `notificationType`, `target.userId`, `content.{title,message,secondaryText}`, `action.{label,url}`, `classification.{priority,aggregationKey,deduplicationKey,replaceable}`, `timestamps.{...}`). Acks are camelCase JSON: `eventId`, `deviceId`, `agentReceivedAt`, `toastSubmittedAt` (omitted when null), `status`.
+Inbound events must match the design §7 JSON shape (`schemaVersion`, `eventId`, `notificationType`, `target.userId`, `content.{title,message,secondaryText,image.url}`, `action.{label,url}`, `classification.{priority,aggregationKey,deduplicationKey,replaceable}`, `timestamps.{...}`). `content.image.url` is optional and must be `https`; it renders as a circular avatar via `AppLogoOverride`. Acks are camelCase JSON: `eventId`, `deviceId`, `agentReceivedAt`, `toastSubmittedAt` (omitted when null), `status`.
 
 ## Setup
 
@@ -117,7 +117,7 @@ dotnet run --project src/NotificationAgent.ConsoleHost
 Terminal 2 — publish test events and watch acks:
 
 ```bash
-# Usage: dotnet run --project tools/TestPublisher -- <userId> [title] [message] [priority] [count]
+# Usage: dotnet run --project tools/TestPublisher -- <userId> [title] [message] [priority] [count] [imageUrl]
 dotnet run --project tools/TestPublisher -- u_demo "Invoice ready" "INV-8492 is ready." normal 3
 ```
 
