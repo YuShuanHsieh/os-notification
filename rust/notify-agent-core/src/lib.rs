@@ -4,6 +4,7 @@ pub mod dedup;
 pub mod grapheme;
 pub mod host;
 pub mod identity;
+pub mod image_cache;
 pub mod model;
 pub mod parser;
 pub mod pipeline;
