@@ -124,21 +124,22 @@ for (var i = 0; i < messages.Count; i++)
         ["notificationType"] = spec.Type,
         ["target"] = new { userId = spec.UserId },
         ["content"] = content,
-        ["classification"] = new
-        {
-            priority = spec.Priority,
-            aggregationKey = spec.AggKey ?? spec.Type,
-            deduplicationKey = spec.DedupKey ?? eventId,
-            replaceable = spec.Replaceable,
-        },
-        ["timestamps"] = new
-        {
-            producerCreatedAt = DateTimeOffset.UtcNow,
-            serverPublishedAt = DateTimeOffset.UtcNow,
-        },
     };
     if (spec.ActionLabel is not null && spec.ActionUrl is not null)
         payload["action"] = new { label = spec.ActionLabel, url = spec.ActionUrl };
+
+    payload["classification"] = new
+    {
+        priority = spec.Priority,
+        aggregationKey = spec.AggKey ?? spec.Type,
+        deduplicationKey = spec.DedupKey ?? eventId,
+        replaceable = spec.Replaceable,
+    };
+    payload["timestamps"] = new
+    {
+        producerCreatedAt = DateTimeOffset.UtcNow,
+        serverPublishedAt = DateTimeOffset.UtcNow,
+    };
 
     await nats.PublishAsync(subject, JsonSerializer.SerializeToUtf8Bytes(payload));
     Console.WriteLine($"[PUB] {eventId} -> {subject} (priority={spec.Priority})");
