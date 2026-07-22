@@ -14,6 +14,9 @@ internal static class WindowsToastContentFactory
         if (!string.IsNullOrEmpty(toast.Attribution))
             builder.AddAttributionText(toast.Attribution);
 
+        if (HttpsUrlPolicy.TryCreate(toast.ImageUrl, out var imageUri))
+            builder.AddAppLogoOverride(imageUri, ToastGenericAppLogoCrop.Circle);
+
         if (!string.IsNullOrWhiteSpace(toast.ActionLabel)
             && HttpsUrlPolicy.TryCreate(toast.ActionUrl, out var actionUri))
         {
