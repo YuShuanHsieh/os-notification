@@ -8,6 +8,8 @@ namespace NotificationAgent.Windows;
 /// Entra object id ("oid" / AuthenticationResult.UniqueId), never the Windows account name.</summary>
 public sealed class MsalIdentityProvider : IIdentityProvider
 {
+    private static readonly string[] UserReadScopes = { "User.Read" };
+
     private readonly string _clientId;
     private readonly string _tenantId;
 
@@ -19,30 +21,41 @@ public sealed class MsalIdentityProvider : IIdentityProvider
 
     public async ValueTask<AgentIdentity> GetIdentityAsync(CancellationToken ct = default)
     {
+        var result = await AcquireTokenAsync(UserReadScopes, ct).ConfigureAwait(false);
+        return new AgentIdentity($"u_{result.UniqueId}", DeviceIdStore.GetOrCreate());
+    }
+
+    /// <summary>Silently acquires an access token for an additional scope, reusing the same
+    /// WAM-brokered account as GetIdentityAsync (design §4: external NATS auth service reuses
+    /// AAD identity instead of a separate, identity-independent credential).</summary>
+    public async Task<string> GetAccessTokenAsync(string scope, CancellationToken ct = default)
+    {
+        var result = await AcquireTokenAsync(new[] { scope }, ct).ConfigureAwait(false);
+        return result.AccessToken;
+    }
+
+    private async Task<AuthenticationResult> AcquireTokenAsync(string[] scopes, CancellationToken ct)
+    {
         var app = PublicClientApplicationBuilder.Create(_clientId)
             .WithAuthority($"https://login.microsoftonline.com/{_tenantId}")
             .WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows))
             .WithDefaultRedirectUri()
             .Build();
 
-        var scopes = new[] { "User.Read" };
-        AuthenticationResult result;
         try
         {
             var accounts = await app.GetAccountsAsync().ConfigureAwait(false);
             var account = accounts.FirstOrDefault()
                 ?? PublicClientApplication.OperatingSystemAccount;
-            result = await app.AcquireTokenSilent(scopes, account)
+            return await app.AcquireTokenSilent(scopes, account)
                 .ExecuteAsync(ct).ConfigureAwait(false);
         }
         catch (MsalUiRequiredException)
         {
             // POC fallback; production would surface a sign-in prompt via the app UX.
-            result = await app.AcquireTokenInteractive(scopes)
+            return await app.AcquireTokenInteractive(scopes)
                 .ExecuteAsync(ct).ConfigureAwait(false);
         }
-
-        return new AgentIdentity($"u_{result.UniqueId}", DeviceIdStore.GetOrCreate());
     }
 }
 
