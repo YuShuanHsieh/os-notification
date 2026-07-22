@@ -19,6 +19,16 @@ pub fn validate(value: &str) -> Option<Url> {
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return None;
     }
+    // C# parity: ActionUrlPolicy also requires Uri.CheckHostName(IdnHost) !=
+    // Unknown. The WHATWG parser is strictly stronger here — a special-scheme
+    // (https) URL's host is always parsed into a structured Domain (IDNA/
+    // punycode-normalized ASCII), Ipv4, or Ipv6 — but we assert it explicitly
+    // so the guarantee survives any future parser swap, and reject anything
+    // else defensively.
+    match parsed.host() {
+        Some(url::Host::Domain(_)) | Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => {}
+        _ => return None,
+    }
     Some(parsed)
 }
 
@@ -145,6 +155,41 @@ mod tests {
         assert!(validate("https://exa mple.com").is_none());
     }
 
+    // --- structured-host guard (C# `Uri.CheckHostName(IdnHost) != Unknown` parity) ---
+
+    #[test]
+    fn accepted_domain_host_is_structured() {
+        let url = validate("https://example.com/x").expect("should be valid");
+        assert!(matches!(url.host(), Some(url::Host::Domain(_))));
+    }
+
+    #[test]
+    fn accepted_ipv4_host_is_structured() {
+        let url = validate("https://192.168.1.1/x").expect("should be valid");
+        assert!(matches!(url.host(), Some(url::Host::Ipv4(_))));
+    }
+
+    #[test]
+    fn accepted_ipv6_host_is_structured() {
+        let url = validate("https://[2001:db8::1]/x").expect("should be valid");
+        assert!(matches!(url.host(), Some(url::Host::Ipv6(_))));
+    }
+
+    #[test]
+    fn rejects_garbage_host_with_embedded_space() {
+        // Empirically: `Url::parse` fails outright with IdnaError before our
+        // structured-host check even runs — same net result (None) as the C#
+        // `CheckHostName != Unknown` rejection, just enforced one layer lower.
+        assert!(validate("https://exa mple.com/").is_none());
+    }
+
+    #[test]
+    fn rejects_garbage_host_with_bare_percent() {
+        // Empirically: a lone '%' not followed by two hex digits is an invalid
+        // percent-escape in the host, so `Url::parse` fails with IdnaError.
+        assert!(validate("https://ex%mple/").is_none());
+    }
+
     // --- documented semantic gaps vs. the C# Uri-based implementation ---
 
     #[test]
@@ -189,5 +234,27 @@ mod tests {
         // stricter host check can close without re-parsing the raw string.
         let url = validate("https:///path").expect("url-crate host-collapsing quirk");
         assert_eq!(url.host_str(), Some("path"));
+    }
+
+    #[test]
+    fn embedded_tab_is_stripped_and_accepted_unlike_csharp_original_string_compare() {
+        // A third WHATWG-vs-.NET-Uri divergence, same safe category as the two
+        // above: the WHATWG URL Standard's parser preprocessing step strips
+        // ASCII tab (U+0009), CR, and LF from the input *before* parsing even
+        // begins — so "https://exa\tmple.com/" is parsed exactly as if the
+        // tab were never there, yielding "https://example.com/".
+        //
+        // .NET's `Uri` has no such preprocessing step, and (as with the
+        // backslash case) `IsWellFormedOriginalString()` would catch the
+        // discrepancy between the original string and the parsed/re-serialized
+        // one and reject it.
+        //
+        // Net effect: this input is ACCEPTED by our port (canonicalized to
+        // "https://example.com/", a genuinely safe https URL with a real host
+        // and no userinfo — the stripped whitespace never survives into the
+        // value the policy hands back), whereas C# rejects it outright.
+        // Documented here rather than silently diverging.
+        let url = validate("https://exa\tmple.com/").expect("tab stripped by url-crate WHATWG parsing");
+        assert_eq!(url.as_str(), "https://example.com/");
     }
 }
