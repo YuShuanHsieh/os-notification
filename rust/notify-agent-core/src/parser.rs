@@ -92,7 +92,7 @@ fn parse_image(wire: Option<WireImage>) -> Option<crate::model::ImageRef> {
         return None;
     };
     if !url.starts_with("https://") || url.len() > MAX_IMAGE_URL_BYTES {
-        tracing::debug!("dropping invalid image url");
+        tracing::debug!(url, "dropping invalid image url");
         return None;
     }
     let shape = match wire.shape.as_deref().map(str::to_lowercase).as_deref() {

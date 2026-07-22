@@ -87,7 +87,13 @@ impl ImageCache {
         }
 
         tokio::fs::create_dir_all(&self.dir).await?;
-        let tmp = path.with_extension("part");
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let tmp = path.with_extension(format!(
+            "part-{}-{}",
+            std::process::id(),
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
         tokio::fs::write(&tmp, &body).await?;
         tokio::fs::rename(&tmp, path).await?;
         Ok(())

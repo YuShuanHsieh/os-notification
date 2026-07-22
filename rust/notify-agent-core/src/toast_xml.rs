@@ -11,11 +11,21 @@ pub fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// file:/// URI with forward slashes; a leading '/' (unix paths) is not doubled.
+/// file:/// URI with forward slashes and percent-encoded segments; a leading
+/// '/' (unix paths) is not doubled. Tuned for the two path shapes this
+/// codebase produces (unix absolute, windows drive-letter), not general URIs.
 fn file_uri(path: &Path) -> String {
     let p = path.display().to_string().replace('\\', "/");
     let p = p.strip_prefix('/').unwrap_or(&p);
-    format!("file:///{p}")
+    let mut encoded = String::with_capacity(p.len());
+    for b in p.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+            | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => encoded.push(b as char),
+            _ => encoded.push_str(&format!("%{b:02X}")),
+        }
+    }
+    format!("file:///{encoded}")
 }
 
 /// Toast XML per design §7 budget: ≤3 texts, 1 button, plus the separate
@@ -115,5 +125,15 @@ mod tests {
             Some(std::path::Path::new(r"C:\Users\u\AppData\Local\DesktopNotificationAgent\image-cache\abc")),
         );
         assert!(xml.contains(r#"src="file:///C:/Users/u/AppData/Local/DesktopNotificationAgent/image-cache/abc"/>"#));
+    }
+
+    #[test]
+    fn paths_with_spaces_are_percent_encoded() {
+        let image = ImageRef { url: "https://x/a.jpg".into(), shape: ImageShape::Square };
+        let xml = build_toast_xml(
+            &toast(Some(image)),
+            Some(std::path::Path::new(r"C:\Users\John Smith\AppData\Local\DesktopNotificationAgent\image-cache\abc")),
+        );
+        assert!(xml.contains(r#"src="file:///C:/Users/John%20Smith/AppData/Local/DesktopNotificationAgent/image-cache/abc"/>"#));
     }
 }

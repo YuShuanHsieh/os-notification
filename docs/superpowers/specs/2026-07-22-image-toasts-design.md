@@ -67,4 +67,4 @@ C# agent rendering; multiple buttons; hero/inline images (only the appLogoOverri
 
 1. `cargo test` green with the new parser/factory/cache/XML tests; all existing tests pass unmodified (except the factory test file gaining cases).
 2. Live smoke: TestPublisher with an image URL → console head `[image]` line; without → output identical to today.
-3. Windows 11 manual check (added to the existing deferred checklist): toast shows the circular avatar like the reference example; a dead image URL still shows a normal toast.
+3. Windows 11 manual check (added to the existing deferred checklist): toast shows the circular avatar like the reference example; a dead image URL still shows a normal toast; verify on a user profile whose path contains a space (silent image loss is the failure signature of a URI-encoding bug).
