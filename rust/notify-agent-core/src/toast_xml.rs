@@ -52,11 +52,14 @@ pub fn build_toast_xml(toast: &ToastRequest, image_path: Option<&Path>) -> Strin
         .map(|a| format!(r#"<text placement="attribution">{}</text>"#, xml_escape(a)))
         .unwrap_or_default();
     let actions = match (&toast.action_label, &toast.action_url) {
-        (Some(label), Some(url)) => format!(
-            r#"<actions><action content="{}" arguments="{}" activationType="foreground"/></actions>"#,
-            xml_escape(label),
-            xml_escape(url)
-        ),
+        (Some(label), Some(url)) => match crate::action_url::validate(url) {
+            Some(valid) => format!(
+                r#"<actions><action content="{}" arguments="{}" activationType="protocol"/></actions>"#,
+                xml_escape(label),
+                xml_escape(valid.as_str())
+            ),
+            None => String::new(),
+        },
         _ => String::new(),
     };
     format!(
@@ -93,6 +96,35 @@ mod tests {
         // escaping in action attributes
         assert!(xml.contains("Open &lt;chat&gt;"));
         assert!(xml.contains("a=1&amp;b=2"));
+        // protocol activation: the OS launches the (validated) URI directly;
+        // no app code runs on click (CWE-78 fix, commit 2dc820d).
+        assert!(xml.contains(r#"activationType="protocol""#));
+    }
+
+    #[test]
+    fn valid_https_action_url_is_unchanged_by_normalization() {
+        // https://teams.example/chat?a=1&b=2 round-trips through url::Url
+        // unchanged, so the arguments attribute carries the exact same text.
+        let xml = build_toast_xml(&toast(None), None);
+        assert!(xml.contains(r#"arguments="https://teams.example/chat?a=1&amp;b=2""#));
+    }
+
+    #[test]
+    fn http_action_url_is_rejected_no_actions_element() {
+        let mut t = toast(None);
+        t.action_url = Some("http://teams.example/chat".into());
+        let xml = build_toast_xml(&t, None);
+        assert!(!xml.contains("<actions>"));
+        assert!(!xml.contains("<action"));
+    }
+
+    #[test]
+    fn userinfo_action_url_is_rejected_no_actions_element() {
+        let mut t = toast(None);
+        t.action_url = Some("https://user:pass@teams.example/chat".into());
+        let xml = build_toast_xml(&t, None);
+        assert!(!xml.contains("<actions>"));
+        assert!(!xml.contains("<action"));
     }
 
     #[test]

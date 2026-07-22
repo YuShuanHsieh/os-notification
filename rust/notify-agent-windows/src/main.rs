@@ -13,16 +13,11 @@ mod win {
     use notify_agent_core::host::{AgentConfig, AgentHost};
     use notify_agent_core::identity::{DeviceCodeIdentity, EnvIdentity, IdentityProvider};
     use notify_agent_core::toast::{ToastRenderer, ToastRequest};
-    use windows::core::{HSTRING, Interface, w};
+    use windows::core::{HSTRING, w};
     use windows::Data::Xml::Dom::XmlDocument;
-    use windows::Foundation::TypedEventHandler;
-    use windows::UI::Notifications::{
-        ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
-    };
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND};
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use windows::Win32::System::Threading::CreateMutexW;
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     /// Unpackaged-app AppUserModelID; registered per-user in HKCU on first
     /// run (the WinAppSDK Register() substitute — design §6 of the Rust spec).
@@ -61,24 +56,11 @@ mod win {
             doc.LoadXml(&HSTRING::from(xml))?;
             let notification = ToastNotification::CreateToastNotification(&doc)?;
 
-            // Button clicks while the agent runs: validate and open http(s) only.
-            notification.Activated(&TypedEventHandler::new(|_, args: &Option<windows::core::IInspectable>| {
-                if let Some(args) = args {
-                    if let Ok(activated) = args.cast::<ToastActivatedEventArgs>() {
-                        if let Ok(arguments) = activated.Arguments() {
-                            let url = arguments.to_string();
-                            if url.starts_with("https://") || url.starts_with("http://") {
-                                unsafe {
-                                    ShellExecuteW(HWND::default(), w!("open"),
-                                        &HSTRING::from(url), None, None, SW_SHOWNORMAL);
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(())
-            }))?;
-
+            // The action button (if any) uses activationType="protocol": the OS
+            // launches the pre-validated https URL directly on click via
+            // protocol activation. No app code runs, so there is no
+            // NotificationInvoked handler / ShellExecuteW here to launch a URL
+            // ourselves (CWE-78 fix, ported from commit 2dc820d).
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?
                 .Show(&notification)?;
             Ok(Utc::now())
