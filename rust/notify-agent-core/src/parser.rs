@@ -5,6 +5,7 @@ use crate::model::{InboundNotification, Priority};
 
 pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
 pub const MAX_JSON_DEPTH: usize = 16;
+pub const MAX_IMAGE_URL_BYTES: usize = 2048;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -40,7 +41,8 @@ pub fn parse_event(
 
     let event_id = require(wire.event_id, "eventId")?;
     let user_id = require(wire.target.and_then(|t| t.user_id), "target.userId")?;
-    let content = wire.content.unwrap_or_default();
+    let mut content = wire.content.unwrap_or_default();
+    let image = parse_image(content.image.take());
     let title = require(content.title, "content.title")?;
     let message = require(content.message, "content.message")?;
 
@@ -65,6 +67,7 @@ pub fn parse_event(
         secondary_text: non_blank(content.secondary_text),
         action_label: non_blank(action.label),
         action_url: non_blank(action.url),
+        image,
         priority,
         replaceable: classification.replaceable.unwrap_or(false),
         producer_created_at: timestamps.producer_created_at,
@@ -79,6 +82,21 @@ fn non_blank(v: Option<String>) -> Option<String> {
 
 fn require(v: Option<String>, field: &'static str) -> Result<String, ParseError> {
     non_blank(v).ok_or(ParseError::MissingField(field))
+}
+
+/// Best-effort: any invalid image spec yields None (the event is unaffected).
+fn parse_image(wire: Option<WireImage>) -> Option<crate::model::ImageRef> {
+    let wire = wire?;
+    let url = wire.url.filter(|u| !u.trim().is_empty())?;
+    if !url.starts_with("https://") || url.len() > MAX_IMAGE_URL_BYTES {
+        tracing::debug!("dropping invalid image url");
+        return None;
+    }
+    let shape = match wire.shape.as_deref().map(str::to_lowercase).as_deref() {
+        Some("square") => crate::model::ImageShape::Square,
+        _ => crate::model::ImageShape::Circle,
+    };
+    Some(crate::model::ImageRef { url, shape })
 }
 
 /// String-aware structural depth scan; enforces the depth limit before the
@@ -137,6 +155,14 @@ struct WireContent {
     title: Option<String>,
     message: Option<String>,
     secondary_text: Option<String>,
+    image: Option<WireImage>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireImage {
+    url: Option<String>,
+    shape: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -292,5 +318,65 @@ mod tests {
         assert!(parse_event(b"not json", received_at(), 1).is_err());
         assert!(parse_event(b"", received_at(), 1).is_err());
         assert!(parse_event(b"null", received_at(), 1).is_err());
+    }
+
+    #[test]
+    fn parses_image_with_default_circle_shape() {
+        let json = br#"{"eventId":"e1","target":{"userId":"u1"},
+            "content":{"title":"t","message":"m",
+                       "image":{"url":"https://cdn.example.com/a.jpg"}}}"#;
+        let n = parse_event(json, received_at(), 1).unwrap();
+        let img = n.image.expect("image present");
+        assert_eq!(img.url, "https://cdn.example.com/a.jpg");
+        assert_eq!(img.shape, crate::model::ImageShape::Circle);
+    }
+
+    #[test]
+    fn parses_square_shape_and_defaults_unknown_to_circle() {
+        for (shape_json, expected) in [
+            ("square", crate::model::ImageShape::Square),
+            ("SQUARE", crate::model::ImageShape::Square),
+            ("hexagon", crate::model::ImageShape::Circle),
+        ] {
+            let json = format!(
+                r#"{{"eventId":"e1","target":{{"userId":"u1"}},
+                     "content":{{"title":"t","message":"m",
+                                 "image":{{"url":"https://x.example/a.png","shape":"{shape_json}"}}}}}}"#
+            );
+            assert_eq!(parse_event(json.as_bytes(), received_at(), 1).unwrap().image.unwrap().shape, expected);
+        }
+    }
+
+    #[test]
+    fn absent_image_is_none_and_schema_10_unchanged() {
+        let n = parse_event(DOC_EXAMPLE.as_bytes(), received_at(), 1).unwrap();
+        assert_eq!(n.image, None);
+    }
+
+    #[test]
+    fn invalid_image_drops_image_not_event() {
+        for bad in [
+            r#"{"url":"http://insecure.example/a.jpg"}"#,          // wrong scheme
+            r#"{"url":""}"#,                                        // blank
+            r#"{"shape":"circle"}"#,                                // no url
+        ] {
+            let json = format!(
+                r#"{{"eventId":"e1","target":{{"userId":"u1"}},
+                     "content":{{"title":"t","message":"m","image":{bad}}}}}"#
+            );
+            let n = parse_event(json.as_bytes(), received_at(), 1).unwrap(); // event OK
+            assert_eq!(n.image, None, "case: {bad}");
+        }
+    }
+
+    #[test]
+    fn oversize_image_url_drops_image_not_event() {
+        let url = format!("https://x.example/{}", "a".repeat(MAX_IMAGE_URL_BYTES));
+        let json = format!(
+            r#"{{"eventId":"e1","target":{{"userId":"u1"}},
+                 "content":{{"title":"t","message":"m","image":{{"url":"{url}"}}}}}}"#
+        );
+        let n = parse_event(json.as_bytes(), received_at(), 1).unwrap();
+        assert_eq!(n.image, None);
     }
 }

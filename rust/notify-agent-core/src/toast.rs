@@ -75,6 +75,7 @@ pub(crate) mod tests {
             secondary_text: Some("App".into()),
             action_label: Some("Open".into()),
             action_url: Some("https://example.com/x".into()),
+            image: None,
             priority: Priority::Normal,
             aggregation_key: "agg.key".into(),
             deduplication_key: id.into(),
