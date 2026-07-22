@@ -58,6 +58,7 @@ public class EventParserTests
         Assert.Equal(DateTimeOffset.Parse("2026-07-15T08:30:00.100Z"), n.ProducerCreatedAt);
         Assert.Equal(DateTimeOffset.Parse("2026-07-15T08:30:00.150Z"), n.ServerPublishedAt);
         Assert.Equal(ReceivedAt, n.ReceivedAt);
+        Assert.Null(n.ImageUrl);
     }
 
     [Theory]
@@ -89,6 +90,22 @@ public class EventParserTests
         Assert.False(n.Replaceable);
         Assert.Null(n.ActionLabel);
         Assert.Null(n.ProducerCreatedAt);
+        Assert.Null(n.ImageUrl);
+    }
+
+    [Fact]
+    public void Parses_image_url_when_present()
+    {
+        var json = """
+            {"eventId":"e1","target":{"userId":"u1"},
+             "content":{"title":"t","message":"m",
+                        "image":{"url":"https://cdn.example.com/avatars/tony.jpg"}}}
+            """;
+
+        var ok = _parser.TryParse(Encoding.UTF8.GetBytes(json), ReceivedAt, out var n, out var error);
+
+        Assert.True(ok, error);
+        Assert.Equal("https://cdn.example.com/avatars/tony.jpg", n!.ImageUrl);
     }
 
     [Theory]

@@ -10,8 +10,9 @@ public class ToastContentFactoryTests
         string id = "e1", string title = "Title", string message = "Message",
         EventPriority priority = EventPriority.Normal, string aggKey = "agg.key",
         string? dedupKey = null, bool replaceable = false,
-        string? actionLabel = "Open", string? actionUrl = "https://example.com/x") =>
-        new(id, "u1", title, message, "App", actionLabel, actionUrl, priority,
+        string? actionLabel = "Open", string? actionUrl = "https://example.com/x",
+        string? imageUrl = null) =>
+        new(id, "u1", title, message, "App", imageUrl, actionLabel, actionUrl, priority,
             aggKey, dedupKey ?? id, replaceable, null, null,
             DateTimeOffset.Parse("2026-07-15T08:30:00.190Z"));
 

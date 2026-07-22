@@ -9,6 +9,7 @@ public sealed record InboundNotification(
     string Title,
     string Message,
     string? SecondaryText,
+    string? ImageUrl,
     string? ActionLabel,
     string? ActionUrl,
     EventPriority Priority,
