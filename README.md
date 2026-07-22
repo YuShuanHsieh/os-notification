@@ -142,6 +142,30 @@ It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` m
 
 `Microsoft.Toolkit.Uwp.Notifications` 7.1.3 is retained as an explicit legacy compatibility dependency because it supports unpackaged desktop notifications without introducing the Windows App SDK runtime. Revisit this choice when a maintained alternative provides the same standalone deployment model.
 
+### Verify the avatar image renders correctly (Windows)
+
+With the Windows head running (above) and pointed at a NATS server reachable from wherever you run `TestPublisher` (the same machine, or any box that can reach `NOTIFY_NATS_URL`), publish one event with an image URL to reproduce a Teams-presence-style toast (circular avatar + two-line text):
+
+```bash
+dotnet run --project tools/TestPublisher -- u_demo "Tony Redmond" "is now available" critical 1 "https://i.pravatar.cc/300"
+```
+
+(`critical` renders immediately instead of waiting for a batch window; `https://i.pravatar.cc/300` is a public placeholder-avatar service — swap in any reachable https image URL.)
+
+**Expected toast, on the Windows machine:**
+- A circular avatar image at the left, cropped from the URL — confirms `AddAppLogoOverride(uri, ToastGenericAppLogoCrop.Circle)`.
+- "Tony Redmond" as the first text line, "is now available" as the second.
+- "TestPublisher" as small attribution text (from `TestPublisher`'s hardcoded `secondaryText`).
+- A "View" button (from `TestPublisher`'s hardcoded `action`); clicking it opens `https://app.example.com/invoices/8492` in the default browser.
+
+**Negative case** — confirm a bad image URL degrades to text-only instead of failing the toast:
+
+```bash
+dotnet run --project tools/TestPublisher -- u_demo "Tony Redmond" "is now available" critical 1 "http://not-https.example.com/x.jpg"
+```
+
+On the **Windows head**, expect the same toast *without* an avatar (the `http://` URL fails `HttpsUrlPolicy` and is silently dropped) — title, message, attribution, and button still render normally. This case can only be verified there: the **console dev host** prints whatever `ImageUrl` it's given without validating it first (`ConsoleToastRenderer` isn't `HttpsUrlPolicy`-gated — the same is already true of its `[ActionLabel] -> ActionUrl` line, so this isn't a new gap), so it will show `[image] http://not-https.example.com/x.jpg` regardless of scheme.
+
 ## Development
 
 - **TDD workflow:** every Core component was built test-first; keep it that way. All time-dependent code takes a `TimeProvider` so tests use `FakeTimeProvider` — no sleeps or polling.
