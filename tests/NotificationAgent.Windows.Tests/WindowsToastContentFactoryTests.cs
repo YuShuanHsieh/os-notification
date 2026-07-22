@@ -45,12 +45,32 @@ public sealed class WindowsToastContentFactoryTests
         Assert.Empty(CreateDocument(ActionLabel: actionLabel).Descendants("action"));
     }
 
+    [Fact]
+    public void Create_AddsCircularAppLogoOverrideForValidHttpsImage()
+    {
+        var image = Assert.Single(
+            CreateDocument(ImageUrl: "https://example.com/avatar.jpg").Descendants("image"));
+        Assert.Equal("https://example.com/avatar.jpg", (string?)image.Attribute("src"));
+        Assert.Equal("appLogoOverride", (string?)image.Attribute("placement"));
+        Assert.Equal("circle", (string?)image.Attribute("hint-crop"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("http://example.com/avatar.jpg")]
+    [InlineData("file:///C:/Windows/System32/cmd.exe")]
+    public void Create_OmitsAppLogoOverrideForMissingOrUnsafeImageUrl(string? imageUrl)
+    {
+        Assert.Empty(CreateDocument(ImageUrl: imageUrl).Descendants("image"));
+    }
+
     private static XDocument CreateDocument(
         string? ActionLabel = "Open",
-        string? ActionUrl = "https://example.com/item")
+        string? ActionUrl = "https://example.com/item",
+        string? ImageUrl = null)
     {
         var request = new ToastRequest(
-            "Title", "Message", "App", ActionLabel, ActionUrl,
+            "Title", "Message", "App", ImageUrl, ActionLabel, ActionUrl,
             Array.Empty<InboundNotification>());
         return XDocument.Parse(WindowsToastContentFactory.Create(request).GetContent());
     }
