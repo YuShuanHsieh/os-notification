@@ -9,3 +9,4 @@ pub mod model;
 pub mod parser;
 pub mod pipeline;
 pub mod toast;
+pub mod toast_xml;

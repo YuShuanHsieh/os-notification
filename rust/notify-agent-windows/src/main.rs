@@ -35,32 +35,27 @@ mod win {
         Ok(())
     }
 
-    fn xml_escape(s: &str) -> String {
-        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-            .replace('"', "&quot;").replace('\'', "&apos;")
+    pub struct WindowsToastRenderer {
+        cache: notify_agent_core::image_cache::ImageCache,
     }
 
-    pub struct WindowsToastRenderer;
+    impl WindowsToastRenderer {
+        pub fn new() -> anyhow::Result<Self> {
+            let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
+                .join("DesktopNotificationAgent")
+                .join("image-cache");
+            Ok(Self { cache: notify_agent_core::image_cache::ImageCache::new(dir) })
+        }
+    }
 
     #[async_trait]
     impl ToastRenderer for WindowsToastRenderer {
         async fn show(&self, toast: &ToastRequest) -> anyhow::Result<DateTime<Utc>> {
-            // Budget (design §7): ≤3 text elements, 1 button. Title/message are
-            // already grapheme-truncated by the content factory.
-            let attribution = toast.attribution.as_deref().map(xml_escape).map(|a| {
-                format!(r#"<text placement="attribution">{a}</text>"#)
-            }).unwrap_or_default();
-            let actions = match (&toast.action_label, &toast.action_url) {
-                (Some(label), Some(url)) => format!(
-                    r#"<actions><action content="{}" arguments="{}" activationType="foreground"/></actions>"#,
-                    xml_escape(label), xml_escape(url)
-                ),
-                _ => String::new(),
+            let image_path = match &toast.image {
+                Some(image_ref) => self.cache.fetch(&image_ref.url).await, // ≤3s, best-effort
+                None => None,
             };
-            let xml = format!(
-                r#"<toast><visual><binding template="ToastGeneric"><text>{}</text><text>{}</text>{attribution}</binding></visual>{actions}</toast>"#,
-                xml_escape(&toast.title), xml_escape(&toast.message)
-            );
+            let xml = notify_agent_core::toast_xml::build_toast_xml(toast, image_path.as_deref());
 
             let doc = XmlDocument::new()?;
             doc.LoadXml(&HSTRING::from(xml))?;
@@ -126,7 +121,7 @@ mod win {
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
                 .init();
             let config = AgentConfig::from_env();
-            let renderer: Arc<dyn ToastRenderer> = Arc::new(WindowsToastRenderer);
+            let renderer: Arc<dyn ToastRenderer> = Arc::new(WindowsToastRenderer::new()?);
             let identity: Arc<dyn IdentityProvider> = match std::env::var("NOTIFY_AAD_CLIENT_ID") {
                 Ok(client_id) if !client_id.trim().is_empty() => Arc::new(DeviceCodeIdentity {
                     client_id,
