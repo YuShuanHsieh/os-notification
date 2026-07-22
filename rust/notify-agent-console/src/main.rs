@@ -18,6 +18,13 @@ impl ToastRenderer for ConsoleToastRenderer {
         if let Some(attribution) = &toast.attribution {
             println!("        — {attribution}");
         }
+        if let Some(image) = &toast.image {
+            let shape = match image.shape {
+                notify_agent_core::model::ImageShape::Circle => "circle",
+                notify_agent_core::model::ImageShape::Square => "square",
+            };
+            println!("        [image] {} ({shape})", image.url);
+        }
         if let (Some(label), Some(url)) = (&toast.action_label, &toast.action_url) {
             println!("        [{label}] -> {url}");
         }

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::grapheme;
-use crate::model::InboundNotification;
+use crate::model::{InboundNotification, ImageRef};
 
 pub const MAX_TITLE_GRAPHEMES: usize = 120;
 pub const MAX_MESSAGE_GRAPHEMES: usize = 500;
@@ -16,6 +16,7 @@ pub struct ToastRequest {
     pub attribution: Option<String>,
     pub action_label: Option<String>,
     pub action_url: Option<String>,
+    pub image: Option<ImageRef>,
     pub sources: Vec<InboundNotification>,
 }
 
@@ -32,6 +33,7 @@ pub fn from_single(n: &InboundNotification) -> ToastRequest {
         attribution: n.secondary_text.clone(),
         action_label: n.action_label.clone(),
         action_url: n.action_url.clone(),
+        image: n.image.clone(),
         sources: vec![n.clone()],
     }
 }
@@ -54,6 +56,7 @@ pub fn from_batch(batch: &[InboundNotification]) -> ToastRequest {
         attribution: latest.secondary_text.clone(),
         action_label: latest.action_label.clone(),
         action_url: latest.action_url.clone(),
+        image: latest.image.clone(),
         sources: batch.to_vec(),
     }
 }
@@ -133,5 +136,35 @@ pub(crate) mod tests {
     #[should_panic(expected = "batch must not be empty")]
     fn empty_batch_panics() {
         from_batch(&[]);
+    }
+
+    #[test]
+    fn single_event_threads_image() {
+        let mut n = event(1, "e1", "m");
+        n.image = Some(crate::model::ImageRef {
+            url: "https://x.example/a.jpg".into(),
+            shape: crate::model::ImageShape::Circle,
+        });
+        assert_eq!(from_single(&n).image, n.image);
+    }
+
+    #[test]
+    fn batch_takes_latest_events_image_strictly() {
+        let mut older = event(1, "e1", "first");
+        older.image = Some(crate::model::ImageRef {
+            url: "https://x.example/old.jpg".into(),
+            shape: crate::model::ImageShape::Square,
+        });
+        let mut latest = event(2, "e2", "second");
+
+        // latest has no image → toast has none (no scavenging)
+        assert_eq!(from_batch(&[older.clone(), latest.clone()]).image, None);
+
+        // latest has one → toast carries exactly it
+        latest.image = Some(crate::model::ImageRef {
+            url: "https://x.example/new.jpg".into(),
+            shape: crate::model::ImageShape::Circle,
+        });
+        assert_eq!(from_batch(&[older, latest.clone()]).image, latest.image);
     }
 }

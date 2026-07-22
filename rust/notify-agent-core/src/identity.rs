@@ -121,6 +121,7 @@ impl IdentityProvider for DeviceCodeIdentity {
                 attribution: Some("Desktop Notification Agent".into()),
                 action_label: Some("Open sign-in page".into()),
                 action_url: Some(dc.verification_uri.clone()),
+                image: None,
                 sources: Vec::new(),
             })
             .await;
