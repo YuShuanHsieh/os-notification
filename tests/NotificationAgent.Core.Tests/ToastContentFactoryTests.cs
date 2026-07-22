@@ -19,12 +19,13 @@ public class ToastContentFactoryTests
     [Fact]
     public void Single_event_maps_fields_directly()
     {
-        var n = Event();
+        var n = Event(imageUrl: "https://cdn.example.com/avatars/tony.jpg");
         var toast = ToastContentFactory.FromSingle(n);
 
         Assert.Equal("Title", toast.Title);
         Assert.Equal("Message", toast.Message);
         Assert.Equal("App", toast.Attribution);
+        Assert.Equal("https://cdn.example.com/avatars/tony.jpg", toast.ImageUrl);
         Assert.Equal("Open", toast.ActionLabel);
         Assert.Equal("https://example.com/x", toast.ActionUrl);
         Assert.Equal(new[] { n }, toast.Sources);
@@ -65,6 +66,19 @@ public class ToastContentFactoryTests
         Assert.Equal("Latest: third", toast.Message);
         Assert.Equal(3, toast.Sources.Count);
         Assert.Equal("Open", toast.ActionLabel); // action of the latest event
+    }
+
+    [Fact]
+    public void Batch_takes_image_from_latest_event()
+    {
+        var batch = new[]
+        {
+            Event("e1", imageUrl: "https://cdn.example.com/first.jpg"),
+            Event("e2", imageUrl: "https://cdn.example.com/second.jpg"),
+        };
+        var toast = ToastContentFactory.FromBatch(batch);
+
+        Assert.Equal("https://cdn.example.com/second.jpg", toast.ImageUrl);
     }
 
     [Fact]

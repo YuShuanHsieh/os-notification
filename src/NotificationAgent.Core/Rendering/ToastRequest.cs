@@ -8,6 +8,7 @@ public sealed record ToastRequest(
     string Title,
     string Message,
     string? Attribution,
+    string? ImageUrl,
     string? ActionLabel,
     string? ActionUrl,
     IReadOnlyList<InboundNotification> Sources);
