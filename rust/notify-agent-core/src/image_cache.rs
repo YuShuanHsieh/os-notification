@@ -86,10 +86,10 @@ impl ImageCache {
             body.extend_from_slice(&chunk);
         }
 
-        std::fs::create_dir_all(&self.dir)?;
+        tokio::fs::create_dir_all(&self.dir).await?;
         let tmp = path.with_extension("part");
-        std::fs::write(&tmp, &body)?;
-        std::fs::rename(&tmp, path)?;
+        tokio::fs::write(&tmp, &body).await?;
+        tokio::fs::rename(&tmp, path).await?;
         Ok(())
     }
 
