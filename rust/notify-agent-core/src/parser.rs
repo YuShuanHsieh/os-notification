@@ -87,7 +87,10 @@ fn require(v: Option<String>, field: &'static str) -> Result<String, ParseError>
 /// Best-effort: any invalid image spec yields None (the event is unaffected).
 fn parse_image(wire: Option<WireImage>) -> Option<crate::model::ImageRef> {
     let wire = wire?;
-    let url = wire.url.filter(|u| !u.trim().is_empty())?;
+    let Some(url) = wire.url.filter(|u| !u.trim().is_empty()) else {
+        tracing::debug!("dropping image with missing or blank url");
+        return None;
+    };
     if !url.starts_with("https://") || url.len() > MAX_IMAGE_URL_BYTES {
         tracing::debug!("dropping invalid image url");
         return None;
