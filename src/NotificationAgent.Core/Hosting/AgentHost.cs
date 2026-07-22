@@ -1,3 +1,4 @@
+using System.Globalization;
 using NATS.Client.Core;
 using NotificationAgent.Core.Aggregation;
 using NotificationAgent.Core.Dedup;
@@ -11,7 +12,9 @@ namespace NotificationAgent.Core.Hosting;
 public sealed class AgentOptions
 {
     public string NatsUrl { get; init; } = "nats://127.0.0.1:4222";
+
     public string SubjectTemplate { get; init; } = "notify.user.{0}.desktop"; // design §4
+
     public string AckSubject { get; init; } = "notify.ack.desktop";
 
     public static AgentOptions FromEnvironment() => new()
@@ -48,7 +51,10 @@ public sealed class AgentHost : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _subscription;
 
-    public string Subject { get; }
+    public string Subject
+    {
+        get;
+    }
 
     private AgentHost(NatsConnection nats, EventPipeline pipeline, Aggregator aggregator, string subject)
     {
@@ -58,8 +64,11 @@ public sealed class AgentHost : IAsyncDisposable
         Subject = subject;
     }
 
-    public static async Task<AgentHost> StartAsync(AgentOptions options,
-        IIdentityProvider identityProvider, IToastRenderer renderer, CancellationToken ct = default)
+    public static async Task<AgentHost> StartAsync(
+        AgentOptions options,
+        IIdentityProvider identityProvider,
+        IToastRenderer renderer,
+        CancellationToken ct = default)
     {
         var identity = await identityProvider.GetIdentityAsync(ct).ConfigureAwait(false);
         var nats = new NatsConnection(new NatsOpts { Url = options.NatsUrl });
@@ -70,11 +79,16 @@ public sealed class AgentHost : IAsyncDisposable
             var telemetry = new NatsTelemetryPublisher(nats, options.AckSubject);
             var dedup = new DeduplicationCache(capacity: 10_000, ttl: TimeSpan.FromMinutes(10));
             var (pipeline, aggregator) = AgentPipelineFactory.Create(
-                new PipelineOptions(), new AggregatorOptions(), dedup,
-                renderer, telemetry, identity.DeviceId, TimeProvider.System);
+                new PipelineOptions(),
+                new AggregatorOptions(),
+                dedup,
+                renderer,
+                telemetry,
+                identity.DeviceId,
+                TimeProvider.System);
             pipeline.Start();
 
-            var subject = string.Format(options.SubjectTemplate, identity.UserId);
+            var subject = string.Format(CultureInfo.InvariantCulture, options.SubjectTemplate, identity.UserId);
             var host = new AgentHost(nats, pipeline, aggregator, subject);
             host._subscription = Task.Run(() => host.SubscribeLoopAsync(host._cts.Token), CancellationToken.None);
             return host;
@@ -92,7 +106,9 @@ public sealed class AgentHost : IAsyncDisposable
             .ConfigureAwait(false))
         {
             if (msg.Data is { Length: > 0 } data)
+            {
                 _pipeline.TryEnqueue(new ReceivedEvent(data, DateTimeOffset.UtcNow));
+            }
         }
     }
 
@@ -101,10 +117,18 @@ public sealed class AgentHost : IAsyncDisposable
         _cts.Cancel();
         if (_subscription is not null)
         {
-            try { await _subscription.ConfigureAwait(false); }
-            catch (OperationCanceledException) { }
-            catch { /* a faulted subscribe loop must not block shutdown (best-effort) */ }
+            try
+            {
+                await _subscription.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch
+            { /* a faulted subscribe loop must not block shutdown (best-effort) */
+            }
         }
+
         await _pipeline.DisposeAsync().ConfigureAwait(false);
         await _aggregator.DisposeAsync().ConfigureAwait(false);
         await _nats.DisposeAsync().ConfigureAwait(false);

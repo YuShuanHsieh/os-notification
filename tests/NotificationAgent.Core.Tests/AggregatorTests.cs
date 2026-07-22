@@ -14,7 +14,11 @@ public class AggregatorTests
     private Aggregator Create(AggregatorOptions? options = null) =>
         new(options ?? new AggregatorOptions(), _time, toast =>
         {
-            lock (_rendered) _rendered.Add(toast);
+            lock (_rendered)
+            {
+                _rendered.Add(toast);
+            }
+
             return ValueTask.CompletedTask;
         });
 

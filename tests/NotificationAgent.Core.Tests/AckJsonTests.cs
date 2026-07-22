@@ -19,9 +19,11 @@ public class AckJsonTests
         var root = doc.RootElement;
         Assert.Equal("evt-12345", root.GetProperty("eventId").GetString());
         Assert.Equal("d-456", root.GetProperty("deviceId").GetString());
-        Assert.Equal(DateTimeOffset.Parse("2026-07-15T08:30:00.190Z"),
+        Assert.Equal(
+            DateTimeOffset.Parse("2026-07-15T08:30:00.190Z"),
             root.GetProperty("agentReceivedAt").GetDateTimeOffset());
-        Assert.Equal(DateTimeOffset.Parse("2026-07-15T08:30:00.205Z"),
+        Assert.Equal(
+            DateTimeOffset.Parse("2026-07-15T08:30:00.205Z"),
             root.GetProperty("toastSubmittedAt").GetDateTimeOffset());
         Assert.Equal("submitted_to_windows", root.GetProperty("status").GetString());
     }

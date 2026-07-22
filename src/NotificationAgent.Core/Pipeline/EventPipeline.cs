@@ -1,8 +1,8 @@
 using System.Threading.Channels;
 using NotificationAgent.Core.Aggregation;
 using NotificationAgent.Core.Dedup;
-using NotificationAgent.Core.Serialization;
 using NotificationAgent.Core.Rendering;
+using NotificationAgent.Core.Serialization;
 using NotificationAgent.Core.Telemetry;
 
 namespace NotificationAgent.Core.Pipeline;
@@ -12,6 +12,7 @@ public sealed record ReceivedEvent(byte[] Payload, DateTimeOffset ReceivedAt);
 public sealed class PipelineOptions
 {
     public int QueueCapacity { get; init; } = 500;  // design §9 baseline
+
     public int WorkerCount { get; init; } = 2;      // design §9 baseline
 }
 
@@ -32,14 +33,19 @@ public sealed class EventPipeline : IAsyncDisposable
 
     public long DroppedQueueFull => Interlocked.Read(ref _droppedQueueFull);
 
-    public EventPipeline(PipelineOptions options, DeduplicationCache dedup,
-        Aggregator aggregator, ITelemetryPublisher telemetry, string deviceId)
+    public EventPipeline(
+        PipelineOptions options,
+        DeduplicationCache dedup,
+        Aggregator aggregator,
+        ITelemetryPublisher telemetry,
+        string deviceId)
     {
         _options = options;
         _dedup = dedup;
         _aggregator = aggregator;
         _telemetry = telemetry;
         _deviceId = deviceId;
+
         // Wait mode + TryWrite (never blocks): TryWrite returns false when full, which
         // is our observable drop signal. DropWrite would return true and drop silently,
         // making DroppedQueueFull impossible to count.
@@ -53,7 +59,11 @@ public sealed class EventPipeline : IAsyncDisposable
 
     public bool TryEnqueue(ReceivedEvent evt)
     {
-        if (_channel.Writer.TryWrite(evt)) return true;
+        if (_channel.Writer.TryWrite(evt))
+        {
+            return true;
+        }
+
         Interlocked.Increment(ref _droppedQueueFull);
         return false;
     }
@@ -61,7 +71,9 @@ public sealed class EventPipeline : IAsyncDisposable
     public void Start()
     {
         for (var i = 0; i < _options.WorkerCount; i++)
+        {
             _workers.Add(Task.Run(() => WorkerLoopAsync(_cts.Token)));
+        }
     }
 
     private async Task WorkerLoopAsync(CancellationToken ct)
@@ -85,8 +97,15 @@ public sealed class EventPipeline : IAsyncDisposable
 
     private async ValueTask ProcessAsync(ReceivedEvent received, CancellationToken ct)
     {
-        if (!_parser.TryParse(received.Payload, received.ReceivedAt, out var n, out _)) return;
-        if (!_dedup.TryAdd(n!.DeduplicationKey)) return;
+        if (!_parser.TryParse(received.Payload, received.ReceivedAt, out var n, out _))
+        {
+            return;
+        }
+
+        if (!_dedup.TryAdd(n!.DeduplicationKey))
+        {
+            return;
+        }
 
         await _telemetry.PublishAckAsync(
             new AckPayload(n.EventId, _deviceId, n.ReceivedAt, null, AckStatuses.ObservedByAgent),
@@ -97,8 +116,14 @@ public sealed class EventPipeline : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _channel.Writer.TryComplete();
-        try { await Task.WhenAll(_workers).ConfigureAwait(false); }
-        catch { /* worker cancellation during shutdown is fine */ }
+        try
+        {
+            await Task.WhenAll(_workers).ConfigureAwait(false);
+        }
+        catch
+        { /* worker cancellation during shutdown is fine */
+        }
+
         _cts.Cancel();
         _cts.Dispose();
     }
@@ -123,7 +148,10 @@ public static class AgentPipelineFactory
             foreach (var source in toast.Sources)
             {
                 await telemetry.PublishAckAsync(new AckPayload(
-                    source.EventId, deviceId, source.ReceivedAt, submittedAt,
+                    source.EventId,
+                    deviceId,
+                    source.ReceivedAt,
+                    submittedAt,
                     AckStatuses.SubmittedToWindows)).ConfigureAwait(false);
             }
         });

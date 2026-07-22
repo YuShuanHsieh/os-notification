@@ -56,7 +56,11 @@ internal static class DeviceIdStore
             "DesktopNotificationAgent");
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "device-id");
-        if (File.Exists(path)) return File.ReadAllText(path).Trim();
+        if (File.Exists(path))
+        {
+            return File.ReadAllText(path).Trim();
+        }
+
         var id = $"d-{Guid.NewGuid():N}";
         File.WriteAllText(path, id);
         return id;

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using NATS.Client.Core;
@@ -7,7 +8,7 @@ var userId = args.Length > 0 ? args[0] : "u_demo";
 var title = args.Length > 1 ? args[1] : "Invoice ready";
 var message = args.Length > 2 ? args[2] : "Invoice INV-8492 is ready for review.";
 var priority = args.Length > 3 ? args[3] : "normal";
-var count = args.Length > 4 ? int.Parse(args[4]) : 1;
+var count = args.Length > 4 ? int.Parse(args[4], CultureInfo.InvariantCulture) : 1;
 var imageUrl = args.Length > 5 ? args[5] : null;
 
 var natsUrl = Environment.GetEnvironmentVariable("NOTIFY_NATS_URL") ?? "nats://127.0.0.1:4222";
@@ -23,9 +24,13 @@ var ackWatcher = Task.Run(async () =>
     try
     {
         await foreach (var msg in nats.SubscribeAsync<byte[]>(ackSubject, cancellationToken: ackCts.Token))
+        {
             Console.WriteLine($"[ACK] {Encoding.UTF8.GetString(msg.Data!)}");
+        }
     }
-    catch (OperationCanceledException) { }
+    catch (OperationCanceledException)
+    {
+    }
 });
 await Task.Delay(300); // let the ack subscription settle
 
@@ -37,9 +42,25 @@ for (var i = 0; i < count; i++)
         schemaVersion = "1.0",
         eventId,
         notificationType = "billing.invoice.ready",
-        target = new { userId },
-        content = new { title, message, secondaryText = "TestPublisher", image = imageUrl is null ? null : new { url = imageUrl } },
-        action = new { label = "View", url = "https://app.example.com/invoices/8492" },
+        target = new
+        {
+            userId,
+        },
+        content = new
+        {
+            title,
+            message,
+            secondaryText = "TestPublisher",
+            image = imageUrl is null ? null : new
+            {
+                url = imageUrl,
+            },
+        },
+        action = new
+        {
+            label = "View",
+            url = "https://app.example.com/invoices/8492",
+        },
         classification = new
         {
             priority,

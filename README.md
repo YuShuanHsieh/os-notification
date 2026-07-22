@@ -79,7 +79,12 @@ Inbound events must match the design §7 JSON shape (`schemaVersion`, `eventId`,
 ```bash
 dotnet build
 dotnet test
+dotnet format NotificationAgent.sln --verify-no-changes --no-restore
 ```
+
+Builds enforce the repository's Roslyn and StyleCop analyzer rules as errors. The
+shared policy lives in `Directory.Build.props` and `.editorconfig`, so the command
+line and compatible IDEs use the same C# conventions.
 
 The solution (`NotificationAgent.sln`) contains Core, Core.Tests, ConsoleHost, and TestPublisher, so build/test stay green on Linux. The integration tests in `NatsIntegrationTests.cs` run only when a NATS server is reachable on `localhost:4222` and skip politely otherwise.
 

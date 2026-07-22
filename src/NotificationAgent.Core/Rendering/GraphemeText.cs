@@ -10,7 +10,11 @@ public static class GraphemeText
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxGraphemes, 1);
         var info = new StringInfo(value);
-        if (info.LengthInTextElements <= maxGraphemes) return value;
+        if (info.LengthInTextElements <= maxGraphemes)
+        {
+            return value;
+        }
+
         return info.SubstringByTextElements(0, maxGraphemes - 1) + "…";
     }
 }

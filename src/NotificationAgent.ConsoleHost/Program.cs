@@ -8,6 +8,10 @@ await using var host = await AgentHost.StartAsync(
 
 Console.WriteLine($"Agent subscribed to {host.Subject} on {options.NatsUrl}. Ctrl+C to exit.");
 var shutdown = new TaskCompletionSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.TrySetResult(); };
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    shutdown.TrySetResult();
+};
 await shutdown.Task;
 Console.WriteLine("Shutting down.");

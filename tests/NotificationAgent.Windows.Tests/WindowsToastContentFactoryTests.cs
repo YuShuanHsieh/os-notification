@@ -10,7 +10,7 @@ public sealed class WindowsToastContentFactoryTests
     [Fact]
     public void Create_IncludesTextAndAttribution()
     {
-        var document = CreateDocument(ActionUrl: null);
+        var document = CreateDocument(actionUrl: null);
         var text = document.Descendants("text").ToArray();
         Assert.Equal("Title", text[0].Value);
         Assert.Equal("Message", text[1].Value);
@@ -33,7 +33,7 @@ public sealed class WindowsToastContentFactoryTests
     [InlineData("file:///C:/Windows/System32/cmd.exe")]
     public void Create_OmitsActionForMissingOrUnsafeUrl(string? actionUrl)
     {
-        Assert.Empty(CreateDocument(ActionUrl: actionUrl).Descendants("action"));
+        Assert.Empty(CreateDocument(actionUrl: actionUrl).Descendants("action"));
     }
 
     [Theory]
@@ -42,14 +42,14 @@ public sealed class WindowsToastContentFactoryTests
     [InlineData("   ")]
     public void Create_OmitsActionForMissingOrBlankLabel(string? actionLabel)
     {
-        Assert.Empty(CreateDocument(ActionLabel: actionLabel).Descendants("action"));
+        Assert.Empty(CreateDocument(actionLabel: actionLabel).Descendants("action"));
     }
 
     [Fact]
     public void Create_AddsCircularAppLogoOverrideForValidHttpsImage()
     {
         var image = Assert.Single(
-            CreateDocument(ImageUrl: "https://example.com/avatar.jpg").Descendants("image"));
+            CreateDocument(imageUrl: "https://example.com/avatar.jpg").Descendants("image"));
         Assert.Equal("https://example.com/avatar.jpg", (string?)image.Attribute("src"));
         Assert.Equal("appLogoOverride", (string?)image.Attribute("placement"));
         Assert.Equal("circle", (string?)image.Attribute("hint-crop"));
@@ -61,16 +61,16 @@ public sealed class WindowsToastContentFactoryTests
     [InlineData("file:///C:/Windows/System32/cmd.exe")]
     public void Create_OmitsAppLogoOverrideForMissingOrUnsafeImageUrl(string? imageUrl)
     {
-        Assert.Empty(CreateDocument(ImageUrl: imageUrl).Descendants("image"));
+        Assert.Empty(CreateDocument(imageUrl: imageUrl).Descendants("image"));
     }
 
     private static XDocument CreateDocument(
-        string? ActionLabel = "Open",
-        string? ActionUrl = "https://example.com/item",
-        string? ImageUrl = null)
+        string? actionLabel = "Open",
+        string? actionUrl = "https://example.com/item",
+        string? imageUrl = null)
     {
         var request = new ToastRequest(
-            "Title", "Message", "App", ImageUrl, ActionLabel, ActionUrl,
+            "Title", "Message", "App", imageUrl, actionLabel, actionUrl,
             Array.Empty<InboundNotification>());
         return XDocument.Parse(WindowsToastContentFactory.Create(request).GetContent());
     }

@@ -12,6 +12,12 @@ Tests use xUnit. Time-dependent core tests use
 `Microsoft.Extensions.TimeProvider.Testing.FakeTimeProvider`; new deterministic
 timing behavior should follow that pattern.
 
+Every project inherits repository-wide lint settings from `Directory.Build.props`
+and `.editorconfig`. The .NET SDK runs its recommended analyzer set, StyleCop supplies
+established C# source-style rules, and warnings fail builds. Copyright headers and
+mandatory public XML documentation are intentionally excluded; related compact
+types may share a source file.
+
 ## Command matrix
 
 | Change scope | Minimum useful validation |
@@ -29,13 +35,20 @@ Commands:
 ```bash
 dotnet build NotificationAgent.sln
 dotnet test NotificationAgent.sln
+dotnet format NotificationAgent.sln --verify-no-changes --no-restore
 
 dotnet test tests/NotificationAgent.Core.Tests/NotificationAgent.Core.Tests.csproj \
   --filter "FullyQualifiedName~EventPipelineTests"
 
 dotnet build src/NotificationAgent.Windows/NotificationAgent.Windows.csproj
 dotnet test tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj
+dotnet format tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj \
+  --verify-no-changes --no-restore
 ```
+
+Run formatting verification after restore/build because `--no-restore` keeps the
+lint check deterministic. To fix supported formatting diagnostics locally, remove
+`--verify-no-changes`, inspect the resulting diff, and then rerun verification.
 
 ## Integration-test interpretation
 

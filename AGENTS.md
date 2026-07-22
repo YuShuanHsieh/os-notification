@@ -43,10 +43,13 @@ find the smallest relevant set of project context before reading or changing cod
 # Cross-platform solution: Core, Core tests, ConsoleHost, and TestPublisher
 dotnet build NotificationAgent.sln
 dotnet test NotificationAgent.sln
+dotnet format NotificationAgent.sln --verify-no-changes --no-restore
 
 # Windows-targeted projects (compile/test separately; runtime verification needs Windows)
 dotnet build src/NotificationAgent.Windows/NotificationAgent.Windows.csproj
 dotnet test tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj
+dotnet format tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj \
+  --verify-no-changes --no-restore
 
 # Focused example
 dotnet test tests/NotificationAgent.Core.Tests/NotificationAgent.Core.Tests.csproj \
@@ -56,6 +59,11 @@ dotnet test tests/NotificationAgent.Core.Tests/NotificationAgent.Core.Tests.cspr
 The NATS integration test only exercises the live path when a server is available
 at `127.0.0.1:4222`; otherwise it returns without testing that path. Report this
 distinction when describing test results.
+
+All projects inherit Roslyn and StyleCop analysis from `Directory.Build.props` and
+`.editorconfig`. Analyzer warnings fail the build. Run `dotnet format` without
+`--verify-no-changes` to apply safe automatic formatting fixes, then review the
+diff and address remaining diagnostics deliberately.
 
 ## Context ownership
 

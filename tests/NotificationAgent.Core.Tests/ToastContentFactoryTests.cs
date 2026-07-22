@@ -58,8 +58,12 @@ public class ToastContentFactoryTests
     [Fact]
     public void Batch_summarizes_count_and_latest_event()
     {
-        var batch = new[] { Event("e1", message: "first"), Event("e2", message: "second"),
-                            Event("e3", message: "third") };
+        var batch = new[]
+        {
+            Event("e1", message: "first"),
+            Event("e2", message: "second"),
+            Event("e3", message: "third"),
+        };
         var toast = ToastContentFactory.FromBatch(batch);
 
         Assert.Equal("3 notifications — agg.key", toast.Title);

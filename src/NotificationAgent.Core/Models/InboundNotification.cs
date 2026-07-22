@@ -1,6 +1,11 @@
 namespace NotificationAgent.Core.Models;
 
-public enum EventPriority { Normal, Important, Critical }
+public enum EventPriority
+{
+    Normal,
+    Important,
+    Critical,
+}
 
 /// <summary>Normalized, validated notification event as consumed by the pipeline.</summary>
 public sealed record InboundNotification(
