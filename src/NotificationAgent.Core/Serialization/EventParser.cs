@@ -55,6 +55,7 @@ public sealed class EventParser
             Title: wire.Content!.Title!,
             Message: wire.Content.Message!,
             SecondaryText: wire.Content.SecondaryText,
+            ImageUrl: wire.Content.Image?.Url,
             ActionLabel: wire.Action?.Label,
             ActionUrl: wire.Action?.Url,
             Priority: priority,
@@ -89,7 +90,10 @@ public sealed class EventParser
         public string? Title { get; set; }
         public string? Message { get; set; }
         public string? SecondaryText { get; set; }
+        public WireImage? Image { get; set; }
     }
+
+    private sealed class WireImage { public string? Url { get; set; } }
 
     private sealed class WireAction { public string? Label { get; set; } public string? Url { get; set; } }
 

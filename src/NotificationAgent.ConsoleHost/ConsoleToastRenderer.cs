@@ -10,6 +10,7 @@ public sealed class ConsoleToastRenderer : IToastRenderer
         Console.WriteLine($"[TOAST] {toast.Title}");
         Console.WriteLine($"        {toast.Message}");
         if (toast.Attribution is not null) Console.WriteLine($"        — {toast.Attribution}");
+        if (toast.ImageUrl is not null) Console.WriteLine($"        [image] {toast.ImageUrl}");
         if (toast.ActionLabel is not null) Console.WriteLine($"        [{toast.ActionLabel}] -> {toast.ActionUrl}");
         return ValueTask.FromResult(DateTimeOffset.UtcNow);
     }

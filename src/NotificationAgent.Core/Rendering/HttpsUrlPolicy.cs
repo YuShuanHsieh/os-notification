@@ -1,6 +1,6 @@
 namespace NotificationAgent.Core.Rendering;
 
-public static class ActionUrlPolicy
+public static class HttpsUrlPolicy
 {
     public const int MaxUrlLength = 2048;
 
