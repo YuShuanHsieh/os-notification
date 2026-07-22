@@ -1,4 +1,4 @@
-using CommunityToolkit.WinUI.Notifications;
+using Microsoft.Toolkit.Uwp.Notifications;
 using NotificationAgent.Core.Rendering;
 
 namespace NotificationAgent.Windows;
@@ -14,7 +14,7 @@ internal static class WindowsToastContentFactory
         if (!string.IsNullOrEmpty(toast.Attribution))
             builder.AddAttributionText(toast.Attribution);
 
-        if (toast.ActionLabel is not null
+        if (!string.IsNullOrWhiteSpace(toast.ActionLabel)
             && ActionUrlPolicy.TryCreate(toast.ActionUrl, out var actionUri))
         {
             builder.AddButton(new ToastButton()

@@ -138,7 +138,9 @@ $env:NOTIFY_USER_ID = "u_demo"
 dotnet run --project src/NotificationAgent.Windows
 ```
 
-It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `CommunityToolkit.WinUI.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It has no additional notification runtime dependency.
+It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `Microsoft.Toolkit.Uwp.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It has no additional notification runtime dependency.
+
+`Microsoft.Toolkit.Uwp.Notifications` 7.1.3 is retained as an explicit legacy compatibility dependency because it supports unpackaged desktop notifications without introducing the Windows App SDK runtime. Revisit this choice when a maintained alternative provides the same standalone deployment model.
 
 ## Development
 

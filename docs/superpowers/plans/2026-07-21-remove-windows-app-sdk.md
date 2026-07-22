@@ -6,18 +6,18 @@
 
 **Architecture:** Keep the existing `IToastRenderer` boundary and `ToastRequest` data contract. Isolate toolkit XML construction in an internal factory, submit through `ToastNotificationManagerCompat`, and test payload construction without displaying a Windows notification.
 
-**Tech Stack:** .NET 10, CommunityToolkit.WinUI.Notifications 7.1.2, System.Drawing.Common 10.0.10 security override, Windows toast notifications, xUnit
+**Tech Stack:** .NET 10, Microsoft.Toolkit.Uwp.Notifications 7.1.3 (explicit legacy compatibility dependency), System.Drawing.Common 10.0.10 security override, Windows toast notifications, xUnit
 
 ---
 
-### Task 1: Add Failing Notification-Content Tests
+## Task 1: Add Failing Notification-Content Tests
 
 **Files:**
 - Create: `tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj`
 - Create: `tests/NotificationAgent.Windows.Tests/WindowsToastContentFactoryTests.cs`
 - Modify: `src/NotificationAgent.Windows/NotificationAgent.Windows.csproj`
 
-- [ ] **Step 1: Create the Windows notification test project**
+- [x] **Step 1: Create the Windows notification test project**
 
 Create `tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj`:
 
@@ -53,7 +53,7 @@ Expose internal Windows-head types to the test assembly by adding to `src/Notifi
 
 Keep the Windows test project outside `NotificationAgent.sln`, matching the existing rule that Windows-specific projects are built separately from the cross-platform solution.
 
-- [ ] **Step 2: Write tests for generated toast content**
+- [x] **Step 2: Write tests for generated toast content**
 
 Create `tests/NotificationAgent.Windows.Tests/WindowsToastContentFactoryTests.cs`:
 
@@ -96,6 +96,15 @@ public sealed class WindowsToastContentFactoryTests
         Assert.Empty(CreateDocument(ActionUrl: actionUrl).Descendants("action"));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Create_OmitsActionForMissingOrBlankLabel(string? actionLabel)
+    {
+        Assert.Empty(CreateDocument(ActionLabel: actionLabel).Descendants("action"));
+    }
+
     private static XDocument CreateDocument(
         string? ActionLabel = "Open",
         string? ActionUrl = "https://example.com/item")
@@ -108,7 +117,7 @@ public sealed class WindowsToastContentFactoryTests
 }
 ```
 
-- [ ] **Step 3: Run the tests and verify the red state**
+- [x] **Step 3: Run the tests and verify the red state**
 
 Run:
 
@@ -118,7 +127,7 @@ env DOTNET_CLI_HOME=/tmp/dotnet10-cli-home /tmp/dotnet10/dotnet test tests/Notif
 
 Expected: FAIL because `WindowsToastContentFactory` does not exist and the existing Windows App SDK integration invokes unsupported packaging targets on Linux.
 
-### Task 2: Replace Windows App SDK Notifications
+## Task 2: Replace Windows App SDK Notifications
 
 **Files:**
 - Create: `src/NotificationAgent.Windows/WindowsToastContentFactory.cs`
@@ -127,7 +136,7 @@ Expected: FAIL because `WindowsToastContentFactory` does not exist and the exist
 - Modify: `src/NotificationAgent.Windows/Program.cs`
 - Test: `tests/NotificationAgent.Windows.Tests/WindowsToastContentFactoryTests.cs`
 
-- [ ] **Step 1: Replace project dependencies and build properties**
+- [x] **Step 1: Replace project dependencies and build properties**
 
 Remove these entries from `src/NotificationAgent.Windows/NotificationAgent.Windows.csproj`:
 
@@ -141,19 +150,19 @@ Remove these entries from `src/NotificationAgent.Windows/NotificationAgent.Windo
 Add:
 
 ```xml
-<PackageReference Include="CommunityToolkit.WinUI.Notifications" Version="7.1.2" />
+<PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
 <!-- Override the toolkit's vulnerable System.Drawing.Common 4.7.0 dependency. -->
 <PackageReference Include="System.Drawing.Common" Version="10.0.10" />
 ```
 
 Keep `TargetFramework`, `RuntimeIdentifiers`, `Nullable`, `ImplicitUsings`, and `EnableWindowsTargeting` unchanged.
 
-- [ ] **Step 2: Implement notification-content construction**
+- [x] **Step 2: Implement notification-content construction**
 
 Create `src/NotificationAgent.Windows/WindowsToastContentFactory.cs`:
 
 ```csharp
-using CommunityToolkit.WinUI.Notifications;
+using Microsoft.Toolkit.Uwp.Notifications;
 using NotificationAgent.Core.Rendering;
 
 namespace NotificationAgent.Windows;
@@ -169,7 +178,7 @@ internal static class WindowsToastContentFactory
         if (!string.IsNullOrEmpty(toast.Attribution))
             builder.AddAttributionText(toast.Attribution);
 
-        if (toast.ActionLabel is not null
+        if (!string.IsNullOrWhiteSpace(toast.ActionLabel)
             && ActionUrlPolicy.TryCreate(toast.ActionUrl, out var actionUri))
         {
             builder.AddButton(new ToastButton()
@@ -182,12 +191,12 @@ internal static class WindowsToastContentFactory
 }
 ```
 
-- [ ] **Step 3: Replace notification submission**
+- [x] **Step 3: Replace notification submission**
 
 Replace `src/NotificationAgent.Windows/WindowsToastRenderer.cs` with:
 
 ```csharp
-using CommunityToolkit.WinUI.Notifications;
+using Microsoft.Toolkit.Uwp.Notifications;
 using NotificationAgent.Core.Rendering;
 using Windows.UI.Notifications;
 
@@ -205,7 +214,7 @@ public sealed class WindowsToastRenderer : IToastRenderer
 }
 ```
 
-- [ ] **Step 4: Remove Windows App SDK lifecycle calls**
+- [x] **Step 4: Remove Windows App SDK lifecycle calls**
 
 Replace `src/NotificationAgent.Windows/Program.cs` with:
 
@@ -221,10 +230,12 @@ using var singleInstance = new Mutex(initiallyOwned: true,
 if (!isFirstInstance) return;
 
 var options = AgentOptions.FromEnvironment();
+var clientId = Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID")?.Trim();
+var tenantId = Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID")?.Trim();
 IIdentityProvider identity =
-    Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID") is { Length: > 0 } clientId
+    clientId is { Length: > 0 }
         ? new MsalIdentityProvider(clientId,
-            Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID") ?? "organizations")
+            tenantId is { Length: > 0 } ? tenantId : "organizations")
         : new EnvironmentIdentityProvider();
 
 await using var host = await AgentHost.StartAsync(options, identity, new WindowsToastRenderer());
@@ -235,7 +246,7 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) => shutdown.TrySetResult();
 await shutdown.Task;
 ```
 
-- [ ] **Step 5: Run notification-content tests**
+- [x] **Step 5: Run notification-content tests**
 
 Run:
 
@@ -245,19 +256,19 @@ env DOTNET_CLI_HOME=/tmp/dotnet10-cli-home /tmp/dotnet10/dotnet test tests/Notif
 
 Expected: PASS for all notification-content tests on Linux without Visual Studio packaging tasks.
 
-- [ ] **Step 6: Commit the notification migration**
+- [x] **Step 6: Commit the notification migration**
 
 ```bash
 git add src/NotificationAgent.Windows tests/NotificationAgent.Windows.Tests
 git commit -m "refactor: replace Windows App SDK notifications"
 ```
 
-### Task 3: Update Current Documentation
+## Task 3: Update Current Documentation
 
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update architecture and project descriptions**
+- [x] **Step 1: Update architecture and project descriptions**
 
 Replace the Windows project table row with:
 
@@ -276,7 +287,7 @@ dotnet test tests/NotificationAgent.Windows.Tests
 ```
 ````
 
-- [ ] **Step 2: Update Windows build instructions**
+- [x] **Step 2: Update Windows build instructions**
 
 Keep:
 
@@ -293,10 +304,10 @@ Replace the Windows-head introduction with:
 Replace the paragraph after the PowerShell example with:
 
 ```markdown
-It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `CommunityToolkit.WinUI.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It does not require the Windows App SDK runtime.
+It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `Microsoft.Toolkit.Uwp.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It does not require the Windows App SDK runtime.
 ```
 
-- [ ] **Step 3: Verify documentation scope**
+- [x] **Step 3: Verify documentation scope**
 
 Run:
 
@@ -306,20 +317,20 @@ rg -n '(Microsoft\.WindowsAppSDK|Windows App SDK|AppNotification)' README.md src
 
 Expected: no active references. Do not alter `docs/superpowers/plans/2026-07-15-windows-desktop-notification-agent.md`.
 
-- [ ] **Step 4: Commit documentation**
+- [x] **Step 4: Commit documentation**
 
 ```bash
 git add README.md
 git commit -m "docs: describe toolkit notification backend"
 ```
 
-### Task 4: Full Verification
+## Task 4: Full Verification
 
 **Files:**
 - Verify: `NotificationAgent.sln`
 - Verify: `src/NotificationAgent.Windows/NotificationAgent.Windows.csproj`
 
-- [ ] **Step 1: Build and test the complete solution**
+- [x] **Step 1: Build and test the complete solution**
 
 Run:
 
@@ -338,7 +349,7 @@ env DOTNET_CLI_HOME=/tmp/dotnet10-cli-home /tmp/dotnet10/dotnet test tests/Notif
 
 Expected: all notification-content tests pass on Linux.
 
-- [ ] **Step 2: Build the Windows head directly on Linux**
+- [x] **Step 2: Build the Windows head directly on Linux**
 
 Run:
 
@@ -348,7 +359,7 @@ env DOTNET_CLI_HOME=/tmp/dotnet10-cli-home /tmp/dotnet10/dotnet build src/Notifi
 
 Expected: exit 0 with no reference to `Microsoft.Build.Packaging.Pri.Tasks.dll`, `Microsoft.WindowsAppSDK`, or Visual Studio packaging targets.
 
-- [ ] **Step 3: Verify dependency and source removal**
+- [x] **Step 3: Verify dependency and source removal**
 
 Run:
 
@@ -359,7 +370,7 @@ git diff --check agent/fix-cwe-78...HEAD
 git status --short
 ```
 
-Expected: no active Windows App SDK references; the package graph contains `CommunityToolkit.WinUI.Notifications` and no `Microsoft.WindowsAppSDK`; no whitespace errors; clean worktree.
+Expected: no active Windows App SDK references; the package graph contains `Microsoft.Toolkit.Uwp.Notifications` and no `Microsoft.WindowsAppSDK`; no whitespace errors; clean worktree.
 
 - [ ] **Step 4: Record the Windows smoke test**
 

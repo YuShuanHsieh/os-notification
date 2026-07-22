@@ -36,6 +36,15 @@ public sealed class WindowsToastContentFactoryTests
         Assert.Empty(CreateDocument(ActionUrl: actionUrl).Descendants("action"));
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Create_OmitsActionForMissingOrBlankLabel(string? actionLabel)
+    {
+        Assert.Empty(CreateDocument(ActionLabel: actionLabel).Descendants("action"));
+    }
+
     private static XDocument CreateDocument(
         string? ActionLabel = "Open",
         string? ActionUrl = "https://example.com/item")

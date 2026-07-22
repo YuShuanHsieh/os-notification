@@ -6,7 +6,7 @@ Replace the Windows App SDK notification integration with Windows Community Tool
 
 ## Scope
 
-- Replace `Microsoft.WindowsAppSDK` with `CommunityToolkit.WinUI.Notifications` 7.1.2.
+- Replace `Microsoft.WindowsAppSDK` with `Microsoft.Toolkit.Uwp.Notifications` 7.1.3.
 - Override the toolkit's vulnerable `System.Drawing.Common` 4.7.0 transitive dependency with the current .NET 10 servicing package.
 - Remove Windows App SDK-specific build properties and the now-unneeded Windows SDK Build Tools package.
 - Replace `AppNotificationBuilder`, `AppNotificationButton`, and `AppNotificationManager` usage with the toolkit's toast builder and compatibility manager.
@@ -18,7 +18,9 @@ The NATS pipeline, identity providers, single-instance mutex, target Windows ver
 
 ## Dependencies and Build Model
 
-`src/NotificationAgent.Windows` remains an unpackaged `net10.0-windows10.0.19041.0` executable with `EnableWindowsTargeting` enabled. It removes `Microsoft.WindowsAppSDK`, `Microsoft.Windows.SDK.BuildTools`, `WindowsPackageType`, and `WindowsAppSDKSelfContained`. The replacement `CommunityToolkit.WinUI.Notifications` package supplies the toast-content builder and compatibility layer without Windows App SDK PRI/MSIX build tasks or runtime deployment. A direct `System.Drawing.Common` 10.0.10 reference replaces the toolkit's vulnerable 4.7.0 transitive version without changing application behavior.
+`src/NotificationAgent.Windows` remains an unpackaged `net10.0-windows10.0.19041.0` executable with `EnableWindowsTargeting` enabled. It removes `Microsoft.WindowsAppSDK`, `Microsoft.Windows.SDK.BuildTools`, `WindowsPackageType`, and `WindowsAppSDKSelfContained`. The replacement `Microsoft.Toolkit.Uwp.Notifications` package supplies the toast-content builder and compatibility layer without Windows App SDK PRI/MSIX build tasks or runtime deployment. A direct `System.Drawing.Common` 10.0.10 reference replaces the toolkit's vulnerable 4.7.0 transitive version without changing application behavior.
+
+Version 7.1.3 is an explicit legacy compatibility choice: the toolkit notification component is archived, but this package preserves unpackaged desktop notification support without adding the Windows App SDK runtime. The lifecycle risk is accepted for this migration and must be revisited when a maintained alternative supports the same standalone deployment model.
 
 The Windows executable must compile with `dotnet build` from Linux or WSL. Running the executable and displaying a notification remain Windows-only operations.
 

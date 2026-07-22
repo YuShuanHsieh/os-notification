@@ -6,11 +6,11 @@
 
 **Architecture:** Keep target frameworks explicit in each project file, matching the repository's existing structure. Align the .NET-specific testing package with .NET 10, leave all other dependencies and the historical implementation plan unchanged, and verify the solution plus the separately built Windows head with a .NET 10 SDK.
 
-**Tech Stack:** .NET 10 SDK, MSBuild, NuGet, xUnit, Windows App SDK
+**Tech Stack:** .NET 10 SDK, MSBuild, NuGet, xUnit, and the Windows App SDK notification backend that was present before the subsequent notification migration
 
 ---
 
-### Task 1: Retarget Active Projects
+## Task 1: Retarget Active Projects
 
 **Files:**
 - Modify: `src/NotificationAgent.Core/NotificationAgent.Core.csproj`
@@ -19,7 +19,7 @@
 - Modify: `tools/TestPublisher/TestPublisher.csproj`
 - Modify: `tests/NotificationAgent.Core.Tests/NotificationAgent.Core.Tests.csproj`
 
-- [ ] **Step 1: Change the cross-platform target frameworks**
+- [x] **Step 1: Change the cross-platform target frameworks**
 
 In Core, ConsoleHost, TestPublisher, and Core.Tests, replace:
 
@@ -33,7 +33,7 @@ with:
 <TargetFramework>net10.0</TargetFramework>
 ```
 
-- [ ] **Step 2: Change the Windows target framework**
+- [x] **Step 2: Change the Windows target framework**
 
 In `src/NotificationAgent.Windows/NotificationAgent.Windows.csproj`, replace:
 
@@ -47,7 +47,7 @@ with:
 <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
 ```
 
-- [ ] **Step 3: Align the .NET-specific testing dependency**
+- [x] **Step 3: Align the .NET-specific testing dependency**
 
 In `tests/NotificationAgent.Core.Tests/NotificationAgent.Core.Tests.csproj`, replace:
 
@@ -61,26 +61,26 @@ with:
 <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.*" />
 ```
 
-- [ ] **Step 4: Confirm the old SDK rejects the new target**
+- [x] **Step 4: Confirm the old SDK rejects the new target**
 
-Run:
+Using a shell where `dotnet` resolves to the old .NET 8 SDK, run:
 
 ```bash
-/home/cjamhe01385/.dotnet/dotnet build NotificationAgent.sln --no-restore
+dotnet build NotificationAgent.sln --no-restore
 ```
 
 Expected: FAIL with `NETSDK1045`, confirming the projects now require a .NET 10 SDK rather than silently continuing to build with .NET 8.
 
-### Task 2: Update Current Documentation
+## Task 2: Update Current Documentation
 
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Update the architecture and project target references**
+- [x] **Step 1: Update the architecture and project target references**
 
 Replace current prose occurrences of `.NET 8` with `.NET 10`, all four README target occurrences of `net8.0` with `net10.0`, and the Windows target `net8.0-windows10.0.19041.0` with `net10.0-windows10.0.19041.0`.
 
-- [ ] **Step 2: Update the SDK installation instructions**
+- [x] **Step 2: Update the SDK installation instructions**
 
 Change the prerequisite heading to `.NET 10 SDK` and replace:
 
@@ -94,7 +94,7 @@ with:
 bash /tmp/dotnet-install.sh --channel 10.0
 ```
 
-- [ ] **Step 3: Confirm active documentation no longer advertises .NET 8**
+- [x] **Step 3: Confirm active documentation no longer advertises .NET 8**
 
 Run:
 
@@ -104,13 +104,13 @@ rg -n '(\.NET 8|net8\.0|channel 8\.0)' README.md src tests tools
 
 Expected: no matches. Do not alter `docs/superpowers/plans/2026-07-15-windows-desktop-notification-agent.md`, whose .NET 8 references are historical.
 
-### Task 3: Verify with .NET 10
+## Task 3: Verify with .NET 10
 
 **Files:**
 - Verify: `NotificationAgent.sln`
 - Verify: `src/NotificationAgent.Windows/NotificationAgent.Windows.csproj`
 
-- [ ] **Step 1: Make a .NET 10 SDK available**
+- [x] **Step 1: Make a .NET 10 SDK available**
 
 Install the .NET 10 SDK into a temporary directory so verification does not alter repository configuration or replace the user's existing .NET 8 installation:
 
@@ -120,7 +120,7 @@ bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /tmp/dotnet10
 
 Expected: installation succeeds and `/tmp/dotnet10/dotnet --version` reports `10.0.x`.
 
-- [ ] **Step 2: Restore and build the Linux solution**
+- [x] **Step 2: Restore and build the Linux solution**
 
 Run:
 
@@ -130,7 +130,7 @@ Run:
 
 Expected: exit code 0 with 0 build errors.
 
-- [ ] **Step 3: Run the complete test suite**
+- [x] **Step 3: Run the complete test suite**
 
 Run:
 
@@ -140,7 +140,7 @@ Run:
 
 Expected: exit code 0 with all runnable tests passing; the NATS integration test may skip when no server is available.
 
-- [ ] **Step 4: Build the Windows head separately**
+- [x] **Step 4: Build the Windows head separately**
 
 Run:
 
@@ -150,7 +150,7 @@ Run:
 
 Expected: exit code 0 with 0 build errors. This project is intentionally not part of `NotificationAgent.sln`.
 
-- [ ] **Step 5: Check the final diff and active version references**
+- [x] **Step 5: Check the final diff and active version references**
 
 Run:
 

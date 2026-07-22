@@ -9,10 +9,12 @@ using var singleInstance = new Mutex(initiallyOwned: true,
 if (!isFirstInstance) return;
 
 var options = AgentOptions.FromEnvironment();
+var clientId = Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID")?.Trim();
+var tenantId = Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID")?.Trim();
 IIdentityProvider identity =
-    Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID") is { Length: > 0 } clientId
+    clientId is { Length: > 0 }
         ? new MsalIdentityProvider(clientId,
-            Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID") ?? "organizations")
+            tenantId is { Length: > 0 } ? tenantId : "organizations")
         : new EnvironmentIdentityProvider();
 
 await using var host = await AgentHost.StartAsync(options, identity, new WindowsToastRenderer());

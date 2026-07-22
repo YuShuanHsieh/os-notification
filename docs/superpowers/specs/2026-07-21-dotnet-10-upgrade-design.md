@@ -6,7 +6,7 @@ Upgrade the active notification-agent projects from .NET 8 to .NET 10 while pres
 
 ## Scope
 
-- Retarget the four cross-platform projects and the test project from `net8.0` to `net10.0`.
+- Retarget the three cross-platform application projects and the cross-platform Core.Tests project from `net8.0` to `net10.0`.
 - Retarget the Windows project from `net8.0-windows10.0.19041.0` to `net10.0-windows10.0.19041.0`.
 - Update `Microsoft.Extensions.TimeProvider.Testing` from `8.*` to `10.*` so the .NET-specific test dependency aligns with the target framework.
 - Update current README references, prerequisites, and installation commands from .NET 8 to .NET 10.

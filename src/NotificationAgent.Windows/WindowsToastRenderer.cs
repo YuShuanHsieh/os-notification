@@ -1,4 +1,4 @@
-using CommunityToolkit.WinUI.Notifications;
+using Microsoft.Toolkit.Uwp.Notifications;
 using NotificationAgent.Core.Rendering;
 using Windows.UI.Notifications;
 
