@@ -62,11 +62,20 @@ dotnet run --project ../tools/TestPublisher -- u_demo --scenario presence
 | `NOTIFY_DEVICE_ID` | hostname-derived | Optional override for the device identifier in acks |
 | `NOTIFY_AAD_CLIENT_ID` | — | If set, switches identity to the OIDC device-code flow instead of `NOTIFY_USER_ID` |
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | Entra tenant for the device-code flow |
+| `NOTIFY_NATS_CREDS_FILE` | — | Path to a standard NATS `.creds` file (JWT + NKey seed). If set, both heads authenticate to NATS with it. |
+| `NOTIFY_NATS_AUTH_SERVICE_URL` | — | HTTPS endpoint of an external NATS auth service (Windows head only). If set, takes precedence over `NOTIFY_NATS_CREDS_FILE` and requires `NOTIFY_AAD_CLIENT_ID` + `NOTIFY_NATS_AUTH_SERVICE_SCOPE`. |
+| `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | — | AAD scope requested for the token used to call the external auth service. Required when `NOTIFY_NATS_AUTH_SERVICE_URL` is set. |
 
 ### Identity
 
 - **Env identity (default, used above):** set `NOTIFY_USER_ID`. Simplest path for local dev.
 - **Device-code OIDC sign-in:** set `NOTIFY_AAD_CLIENT_ID` (and optionally `NOTIFY_AAD_TENANT_ID`). On startup the agent prints a URL and a code — sign in with any browser, on any device — then resolves the signed-in user's Entra object ID as the identity. This is the Rust agent's replacement for the C# agent's Windows-broker (WAM) sign-in, since no WAM equivalent exists outside .NET.
+
+### NATS authentication
+
+By default the agent connects to NATS unauthenticated, same as before. Set `NOTIFY_NATS_CREDS_FILE` to authenticate with a standard `.creds` file (works with both heads). On Windows, set `NOTIFY_NATS_AUTH_SERVICE_URL` + `NOTIFY_NATS_AUTH_SERVICE_SCOPE` (alongside `NOTIFY_AAD_CLIENT_ID`) to instead authenticate via an external HTTPS auth service that reuses the same AAD sign-in — the NATS JWT is refreshed automatically on every connect and reconnect.
+
+Run with `RUST_LOG=debug` to see each step of this flow as it happens: which auth mode was selected at startup, identity resolution, the NATS connect/connected transition, and — for the external-auth-service mode — the callback firing on each connect/reconnect attempt, the AAD token acquisition, and the JWT fetch, each as a separate `nats auth: ...` / `aad: ...` log line.
 
 ## Build the Windows head
 
@@ -88,3 +97,4 @@ The linked binary lands at `target/x86_64-pc-windows-gnu/release/notify-agent-wi
 - **Console head exits immediately with an identity error:** you need either `NOTIFY_USER_ID` or `NOTIFY_AAD_CLIENT_ID` set.
 - **Windows cross-compile fails at the link step:** re-check `mingw-w64` is installed and `x86_64-pc-windows-gnu` is added (`rustup target list --installed`).
 - **No image appears in a Windows toast:** the agent downloads images best-effort (3 MB / 3 s limits, `https://` only) and silently falls back to a text-only toast on any failure — check the agent's log output (`RUST_LOG=debug`) for the dropped-image reason.
+- **NATS auth isn't behaving as expected (wrong mode selected, connect hangs, external-auth-service calls not firing):** run with `RUST_LOG=debug` and look for the `nats auth: mode = ...` line logged once at startup, then `nats auth [creds-file]: ...` / `nats auth [external-service]: ...` / `aad: ...` lines for each subsequent step. A missing `nats: connected` line after `nats: connecting` means the connect attempt itself is stuck or failing — check the NATS server is reachable at the configured `NOTIFY_NATS_URL`.
