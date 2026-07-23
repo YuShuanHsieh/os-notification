@@ -3,6 +3,7 @@ using NATS.Client.Core;
 using NotificationAgent.Core.Aggregation;
 using NotificationAgent.Core.Dedup;
 using NotificationAgent.Core.Identity;
+using NotificationAgent.Core.Nats;
 using NotificationAgent.Core.Pipeline;
 using NotificationAgent.Core.Rendering;
 using NotificationAgent.Core.Telemetry;
@@ -64,14 +65,25 @@ public sealed class AgentHost : IAsyncDisposable
         Subject = subject;
     }
 
+    /// <summary>Builds connection options, applying auth if a provider is configured (design §2).</summary>
+    internal static NatsOpts BuildNatsOpts(AgentOptions options, INatsAuthProvider? authProvider)
+    {
+        var opts = new NatsOpts { Url = options.NatsUrl };
+        return authProvider is null ? opts : opts with
+        {
+            AuthOpts = authProvider.GetAuthOpts(),
+        };
+    }
+
     public static async Task<AgentHost> StartAsync(
         AgentOptions options,
         IIdentityProvider identityProvider,
         IToastRenderer renderer,
+        INatsAuthProvider? authProvider = null,
         CancellationToken ct = default)
     {
         var identity = await identityProvider.GetIdentityAsync(ct).ConfigureAwait(false);
-        var nats = new NatsConnection(new NatsOpts { Url = options.NatsUrl });
+        var nats = new NatsConnection(BuildNatsOpts(options, authProvider));
         try
         {
             await nats.ConnectAsync().ConfigureAwait(false);

@@ -10,4 +10,8 @@
     <PackageReference Include="NATS.Net" Version="2.*" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="NotificationAgent.Core.Tests" />
+  </ItemGroup>
+
 </Project>
