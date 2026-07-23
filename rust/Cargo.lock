@@ -838,6 +838,7 @@ dependencies = [
  "chrono",
  "notify-agent-core",
  "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 
@@ -852,6 +853,7 @@ dependencies = [
  "chrono",
  "futures",
  "gethostname",
+ "nkeys",
  "reqwest",
  "serde",
  "serde_json",

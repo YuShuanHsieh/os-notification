@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tracing;
 use notify_agent_core::host::{AgentConfig, AgentHost};
 use notify_agent_core::identity::{default_device_id, DeviceCodeIdentity, EnvIdentity, IdentityProvider};
+use notify_agent_core::nats_auth::{CredsFileAuth, NatsAuthProvider};
 use notify_agent_core::toast::{ToastRenderer, ToastRequest};
 
 /// Dev stand-in for the Windows renderer: prints "toasts" to stdout
@@ -52,7 +54,21 @@ async fn main() -> anyhow::Result<()> {
         _ => Arc::new(EnvIdentity),
     };
 
-    let host = AgentHost::start(config, identity, renderer).await?;
+    let auth_provider: Option<Arc<dyn NatsAuthProvider>> = match std::env::var("NOTIFY_NATS_CREDS_FILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(path) => {
+            tracing::debug!(path = %path, "nats auth: mode = creds-file");
+            Some(Arc::new(CredsFileAuth { path }) as Arc<dyn NatsAuthProvider>)
+        }
+        None => {
+            tracing::debug!("nats auth: mode = none (unauthenticated)");
+            None
+        }
+    };
+
+    let host = AgentHost::start(config, identity, renderer, auth_provider).await?;
     println!("Agent subscribed to {} on {}. Ctrl+C to exit.", host.subject(), nats_url);
 
     tokio::signal::ctrl_c().await?;
