@@ -36,18 +36,33 @@ public sealed class TrayApplicationContext : ApplicationContext
             Visible = true,
         };
 
-        _ = StartAgentAsync(startAgent);
+        // Defer starting the agent until the WinForms message loop is actually running:
+        // Application.Run installs the UI SynchronizationContext before it starts pumping
+        // messages, and a Forms Timer only ticks from within that running loop. Starting
+        // the async chain from there (instead of directly in the constructor, which runs
+        // before Application.Run is even called) lets StartAgentAsync's continuation
+        // resume on the UI thread, so it can safely touch _notifyIcon on failure.
+        var startTimer = new System.Windows.Forms.Timer { Interval = 1 };
+        startTimer.Tick += (_, _) =>
+        {
+            startTimer.Stop();
+            startTimer.Dispose();
+            _ = StartAgentAsync(startAgent);
+        };
+        startTimer.Start();
     }
 
     private async Task StartAgentAsync(Func<CancellationToken, Task<AgentHost>> startAgent)
     {
         try
         {
-            _host = await startAgent(CancellationToken.None).ConfigureAwait(false);
+            _host = await startAgent(CancellationToken.None);
         }
         catch
         {
             // Best-effort: a failed start must not crash the tray (design: system tray icon).
+            // No ConfigureAwait(false) above: the continuation must resume on the UI thread
+            // (see the timer comment above) so this write is thread-safe.
             _notifyIcon.Text = $"{BaseTooltip} (agent failed to start)";
         }
     }

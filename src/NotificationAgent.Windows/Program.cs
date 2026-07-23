@@ -2,6 +2,11 @@ using NotificationAgent.Core.Hosting;
 using NotificationAgent.Core.Identity;
 using NotificationAgent.Windows;
 
+// Top-level statements can't carry [STAThread]; set it explicitly as the very first
+// statement, before anything else touches this thread. WinForms' Application.Run
+// requires STA (design: system tray icon).
+Thread.CurrentThread.SetApartmentState(ApartmentState.STA);
+
 // One instance per interactive session: "Local\" mutexes are session-scoped,
 // so two signed-in users each get their own agent (design §2, ADR-001).
 using var singleInstance = new Mutex(
