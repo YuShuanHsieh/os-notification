@@ -7,6 +7,7 @@ pub mod host;
 pub mod identity;
 pub mod image_cache;
 pub mod model;
+pub mod nats_auth;
 pub mod parser;
 pub mod pipeline;
 pub mod toast;
