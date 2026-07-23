@@ -11,8 +11,13 @@ public class ExternalAuthServiceNatsAuthProviderTests
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _respond;
+        private readonly TimeSpan? _delay;
 
-        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) => _respond = respond;
+        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond, TimeSpan? delay = null)
+        {
+            _respond = respond;
+            _delay = delay;
+        }
 
         public HttpRequestMessage? LastRequest
         {
@@ -31,6 +36,11 @@ public class ExternalAuthServiceNatsAuthProviderTests
             LastBody = request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken);
+            if (_delay is { } delay)
+            {
+                await Task.Delay(delay, cancellationToken);
+            }
+
             return _respond(request);
         }
     }
@@ -94,6 +104,22 @@ public class ExternalAuthServiceNatsAuthProviderTests
         var provider = CreateProvider(handler);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            provider.GetAuthOpts().AuthCredCallback!(new Uri("nats://server"), CancellationToken.None).AsTask());
+    }
+
+    [Fact]
+    public async Task Callback_times_out_when_auth_service_is_slow()
+    {
+        var handler = new StubHandler(
+            _ => JsonResponse(HttpStatusCode.OK, new { jwt = "too-late" }),
+            delay: TimeSpan.FromSeconds(5));
+        var provider = new ExternalAuthServiceNatsAuthProvider(
+            new Uri("https://auth.example.com/nats-jwt"),
+            _ => Task.FromResult("aad-token"),
+            new HttpClient(handler),
+            timeout: TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             provider.GetAuthOpts().AuthCredCallback!(new Uri("nats://server"), CancellationToken.None).AsTask());
     }
 }

@@ -13,18 +13,23 @@ namespace NotificationAgent.Windows;
 /// only its public key is sent to the auth service.</summary>
 public sealed class ExternalAuthServiceNatsAuthProvider : INatsAuthProvider
 {
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
+
     private readonly Uri _authServiceUrl;
     private readonly Func<CancellationToken, Task<string>> _accessTokenProvider;
     private readonly HttpClient _httpClient;
+    private readonly TimeSpan _timeout;
 
     public ExternalAuthServiceNatsAuthProvider(
         Uri authServiceUrl,
         Func<CancellationToken, Task<string>> accessTokenProvider,
-        HttpClient httpClient)
+        HttpClient httpClient,
+        TimeSpan? timeout = null)
     {
         _authServiceUrl = authServiceUrl;
         _accessTokenProvider = accessTokenProvider;
         _httpClient = httpClient;
+        _timeout = timeout ?? DefaultTimeout;
 
         using var keyPair = KeyPair.CreatePair(PrefixByte.User);
         Seed = keyPair.GetSeed();
@@ -53,20 +58,23 @@ public sealed class ExternalAuthServiceNatsAuthProvider : INatsAuthProvider
 
     private async Task<string> FetchJwtAsync(string aadToken, CancellationToken ct)
     {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_timeout);
+
         using var request = new HttpRequestMessage(HttpMethod.Post, _authServiceUrl)
         {
             Content = JsonContent.Create(new { nkeyPublicKey = PublicKey }),
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", aadToken);
 
-        using var response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await _httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException(
                 $"NATS auth service returned {(int)response.StatusCode} {response.ReasonPhrase}.");
         }
 
-        var body = await response.Content.ReadFromJsonAsync<AuthServiceResponse>(ct).ConfigureAwait(false);
+        var body = await response.Content.ReadFromJsonAsync<AuthServiceResponse>(timeoutCts.Token).ConfigureAwait(false);
         if (body?.Jwt is not { Length: > 0 })
         {
             throw new InvalidOperationException("NATS auth service response did not contain a jwt.");
