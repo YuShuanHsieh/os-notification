@@ -54,6 +54,7 @@ async fn published_event_is_rendered_and_acked_end_to_end() {
         },
         Arc::new(StubIdentity),
         renderer.clone(),
+        None,
     )
     .await
     .expect("host start");

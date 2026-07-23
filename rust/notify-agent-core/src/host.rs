@@ -10,6 +10,7 @@ use crate::ack::{self, AckPayload, TelemetryPublisher};
 use crate::aggregator::{Aggregator, AggregatorConfig};
 use crate::dedup::DedupCache;
 use crate::identity::IdentityProvider;
+use crate::nats_auth::NatsAuthProvider;
 use crate::pipeline::{build_agent, Pipeline, PipelineConfig, ReceivedEvent};
 use crate::toast::ToastRenderer;
 
@@ -63,9 +64,17 @@ impl AgentHost {
         config: AgentConfig,
         identity: Arc<dyn IdentityProvider>,
         renderer: Arc<dyn ToastRenderer>,
+        auth_provider: Option<Arc<dyn NatsAuthProvider>>,
     ) -> anyhow::Result<AgentHost> {
         let id = identity.identity().await?;
-        let client = async_nats::connect(&config.nats_url).await?;
+        tracing::debug!(user_id = %id.user_id, device_id = %id.device_id, "agent: identity resolved");
+        tracing::debug!(url = %config.nats_url, authenticated = auth_provider.is_some(), "nats: connecting");
+        let opts = match &auth_provider {
+            Some(provider) => provider.connect_options().await?,
+            None => async_nats::ConnectOptions::new(),
+        };
+        let client = opts.connect(&config.nats_url).await?;
+        tracing::debug!("nats: connected");
         let telemetry: Arc<dyn TelemetryPublisher> = Arc::new(NatsTelemetry {
             client: client.clone(),
             subject: config.ack_subject.clone(),
