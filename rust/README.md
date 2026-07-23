@@ -55,7 +55,7 @@ dotnet run --project ../tools/TestPublisher -- u_demo --scenario presence
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | NATS server to connect to |
+| `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | NATS server to connect to. Also accepts `ws://`/`wss://` (NATS WebSocket, e.g. behind a load balancer that doesn't pass through raw TCP) — the scheme is detected automatically. |
 | `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | Subscribe subject; `{0}` is replaced with the user ID |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | Subject the agent publishes acks to |
 | `NOTIFY_USER_ID` | — | Required identity when not using OIDC sign-in (below) |
