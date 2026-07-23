@@ -28,8 +28,16 @@ internal static class NatsAuthSelection
                     "NOTIFY_NATS_AUTH_SERVICE_URL requires NOTIFY_NATS_AUTH_SERVICE_SCOPE.");
             }
 
+            var uri = new Uri(authServiceUrl);
+            if (uri.Scheme != Uri.UriSchemeHttps)
+            {
+                throw new InvalidOperationException(
+                    "NOTIFY_NATS_AUTH_SERVICE_URL must use https (the AAD bearer token would " +
+                    "otherwise be sent in cleartext).");
+            }
+
             return new ExternalAuthServiceNatsAuthProvider(
-                new Uri(authServiceUrl),
+                uri,
                 ct => msalIdentity.GetAccessTokenAsync(authServiceScope, ct),
                 httpClient);
         }

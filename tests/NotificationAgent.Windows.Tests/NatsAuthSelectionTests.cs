@@ -65,4 +65,34 @@ public class NatsAuthSelectionTests
 
         Assert.IsType<ExternalAuthServiceNatsAuthProvider>(result);
     }
+
+    [Fact]
+    public void Select_prefers_external_auth_service_over_creds_file_when_both_configured()
+    {
+        var msal = new MsalIdentityProvider("client-id", "tenant-id");
+
+        var result = NatsAuthSelection.Select(
+            authServiceUrl: "https://auth.example.com",
+            authServiceScope: "api://x/Nats.Connect",
+            credsFile: "/x.creds",
+            msalIdentity: msal,
+            Http);
+
+        Assert.IsType<ExternalAuthServiceNatsAuthProvider>(result);
+    }
+
+    [Fact]
+    public void Select_throws_when_auth_service_url_is_not_https()
+    {
+        var msal = new MsalIdentityProvider("client-id", "tenant-id");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => NatsAuthSelection.Select(
+            authServiceUrl: "http://auth.example.com",
+            authServiceScope: "api://x/Nats.Connect",
+            credsFile: null,
+            msalIdentity: msal,
+            Http));
+
+        Assert.Contains("https", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }
