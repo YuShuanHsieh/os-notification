@@ -132,6 +132,35 @@ impl NatsAuthProvider for ExternalAuthServiceAuth {
     }
 }
 
+/// Presence-based selection inputs for which NatsAuthProvider to use, mirroring how
+/// NOTIFY_AAD_CLIENT_ID selects an identity provider (design §4: startup wiring). Pure and
+/// testable on any platform; actual provider construction (which needs DeviceCodeIdentity /
+/// AadTokenProvider wiring) happens in each host's main.rs.
+pub struct NatsAuthConfig {
+    pub auth_service_url: Option<String>,
+    pub auth_service_scope: Option<String>,
+    pub has_aad_identity: bool,
+}
+
+pub fn validate_auth_service_config(config: &NatsAuthConfig) -> anyhow::Result<()> {
+    let Some(url) = &config.auth_service_url else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        config.has_aad_identity,
+        "NOTIFY_NATS_AUTH_SERVICE_URL requires NOTIFY_AAD_CLIENT_ID (external NATS auth reuses AAD identity)"
+    );
+    anyhow::ensure!(
+        config.auth_service_scope.is_some(),
+        "NOTIFY_NATS_AUTH_SERVICE_URL requires NOTIFY_NATS_AUTH_SERVICE_SCOPE"
+    );
+    anyhow::ensure!(
+        url.starts_with("https://"),
+        "NOTIFY_NATS_AUTH_SERVICE_URL must use https (the AAD bearer token would otherwise be sent in cleartext)"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +275,52 @@ mod tests {
         let provider = ExternalAuthServiceAuth::new(url, Arc::new(FixedToken("t".into()))).unwrap();
 
         assert!(provider.fetch_auth(b"nonce").await.is_err());
+    }
+
+    #[test]
+    fn validate_auth_service_config_ok_when_url_not_set() {
+        let cfg = NatsAuthConfig { auth_service_url: None, auth_service_scope: None, has_aad_identity: false };
+        assert!(validate_auth_service_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_auth_service_config_requires_aad_identity() {
+        let cfg = NatsAuthConfig {
+            auth_service_url: Some("https://auth.example.com".into()),
+            auth_service_scope: Some("api://x/Nats.Connect".into()),
+            has_aad_identity: false,
+        };
+        assert!(validate_auth_service_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_auth_service_config_requires_scope() {
+        let cfg = NatsAuthConfig {
+            auth_service_url: Some("https://auth.example.com".into()),
+            auth_service_scope: None,
+            has_aad_identity: true,
+        };
+        assert!(validate_auth_service_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn validate_auth_service_config_requires_https() {
+        let cfg = NatsAuthConfig {
+            auth_service_url: Some("http://auth.example.com".into()),
+            auth_service_scope: Some("api://x/Nats.Connect".into()),
+            has_aad_identity: true,
+        };
+        let err = validate_auth_service_config(&cfg).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("https"));
+    }
+
+    #[test]
+    fn validate_auth_service_config_ok_when_fully_configured() {
+        let cfg = NatsAuthConfig {
+            auth_service_url: Some("https://auth.example.com".into()),
+            auth_service_scope: Some("api://x/Nats.Connect".into()),
+            has_aad_identity: true,
+        };
+        assert!(validate_auth_service_config(&cfg).is_ok());
     }
 }
