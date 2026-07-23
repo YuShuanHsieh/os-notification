@@ -37,4 +37,12 @@ public class TrayShutdownTests
 
         await TrayShutdown.CloseAsync(DisposeAsync, TimeSpan.FromSeconds(5));
     }
+
+    [Fact]
+    public async Task CloseAsync_does_not_throw_when_dispose_throws_synchronously()
+    {
+        Task DisposeAsync() => throw new InvalidOperationException("boom");
+
+        await TrayShutdown.CloseAsync(DisposeAsync, TimeSpan.FromSeconds(5));
+    }
 }

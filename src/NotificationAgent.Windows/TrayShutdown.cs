@@ -8,7 +8,16 @@ internal static class TrayShutdown
 {
     internal static async Task CloseAsync(Func<Task> disposeAsync, TimeSpan timeout)
     {
-        var dispose = disposeAsync();
+        Task dispose;
+        try
+        {
+            dispose = disposeAsync();
+        }
+        catch
+        {
+            return;
+        }
+
         await Task.WhenAny(dispose, Task.Delay(timeout)).ConfigureAwait(false);
     }
 }

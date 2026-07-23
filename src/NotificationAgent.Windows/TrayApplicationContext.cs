@@ -73,7 +73,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         var host = _host;
         await TrayShutdown.CloseAsync(
             host is null ? () => Task.CompletedTask : () => host.DisposeAsync().AsTask(),
-            CloseTimeout).ConfigureAwait(false);
+            CloseTimeout);
         ExitThread();
         Environment.Exit(0);
     }

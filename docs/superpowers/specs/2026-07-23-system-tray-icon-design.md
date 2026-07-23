@@ -15,7 +15,7 @@ Source: [issue #10](https://github.com/YuShuanHsieh/os-notification/issues/10).
 
 `Program.cs` restructures around a new `TrayApplicationContext` class (`NotificationAgent.Windows`) that owns the `NotifyIcon` and the app's lifetime via WinForms:
 
-```
+```text
 Program.cs (main thread)
   ├─ single-instance mutex check (unchanged, stays first)
   ├─ build AgentOptions / identity / authProvider (unchanged, stays as-is)
@@ -58,12 +58,21 @@ Reads the assembly's version once (backed by a new `<Version>` property in `Noti
 ```csharp
 internal static async Task CloseAsync(Func<Task> disposeAsync, TimeSpan timeout)
 {
-    var dispose = disposeAsync();
+    Task dispose;
+    try
+    {
+        dispose = disposeAsync();
+    }
+    catch
+    {
+        return;
+    }
+
     await Task.WhenAny(dispose, Task.Delay(timeout)).ConfigureAwait(false);
 }
 ```
 
-Extracted as its own pure, WinForms-independent unit specifically so the graceful-then-timeout race is unit-testable (see Testing). `TrayApplicationContext.OnCloseClicked` calls this with `_host?.DisposeAsync().AsTask() ?? Task.CompletedTask` (a no-op immediately-completed task when the agent never started) and a 5-second timeout, then unconditionally calls `ExitThread()` followed by `Environment.Exit(0)` — regardless of whether disposal finished or the timeout won. Any exception from `dispose` is swallowed (matching `AgentHost.DisposeAsync`'s own existing best-effort, non-throwing posture) — Close must never fail to close. The `NotifyIcon` is hidden (`Visible = false`) at the very start of `OnCloseClicked`, before the async work, so there's no lingering icon during shutdown.
+Extracted as its own pure, WinForms-independent unit specifically so the graceful-then-timeout race is unit-testable (see Testing). `TrayApplicationContext.OnCloseClicked` calls this with `_host?.DisposeAsync().AsTask() ?? Task.CompletedTask` (a no-op immediately-completed task when the agent never started) and a 5-second timeout, then unconditionally calls `ExitThread()` followed by `Environment.Exit(0)` — regardless of whether disposal finished or the timeout won. Any exception from `disposeAsync` is swallowed (matching `AgentHost.DisposeAsync`'s own existing best-effort, non-throwing posture) — Close must never fail to close. The `NotifyIcon` is hidden (`Visible = false`) at the very start of `OnCloseClicked`, before the async work, so there's no lingering icon during shutdown.
 
 5 seconds is long enough for a normal graceful shutdown (pipeline drain + NATS disconnect are already fast, best-effort operations per `AgentHost.DisposeAsync`) and short enough that a hung shutdown doesn't make Close feel broken. `ExitThread()` stops the WinForms message loop; the subsequent `Environment.Exit(0)` guarantees the process actually terminates even if some non-foreground thread (e.g. a stuck NATS reconnect attempt) would otherwise keep it alive — this is the "force" half of "force close."
 
