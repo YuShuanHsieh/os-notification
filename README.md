@@ -184,6 +184,15 @@ dotnet run --project tools/TestPublisher -- u_demo "Tony Redmond" "is now availa
 
 On the **Windows head**, expect the same toast *without* an avatar (the `http://` URL fails `HttpsUrlPolicy` and is silently dropped) — title, message, attribution, and button still render normally. This case can only be verified there: the **console dev host** prints whatever `ImageUrl` it's given without validating it first (`ConsoleToastRenderer` isn't `HttpsUrlPolicy`-gated — the same is already true of its `[ActionLabel] -> ActionUrl` line, so this isn't a new gap), so it will show `[image] http://not-https.example.com/x.jpg` regardless of scheme.
 
+### Verify the tray icon and Close button (Windows)
+
+With the Windows head running (above), confirm the tray icon and its Close action:
+
+1. Look for the app's icon in the Windows system tray (it may be under the "^" overflow arrow).
+2. Right-click it — the menu shows "Version 0.1.0" (disabled, not clickable) and a "Close" item.
+3. Click "Close". Within a few seconds the tray icon disappears and the process exits — confirm `DesktopAgent.exe` is gone from Task Manager.
+4. **Failure-path check:** point `NOTIFY_NATS_URL` at an unreachable server (e.g. `nats://127.0.0.1:4223`) and relaunch. The tray icon should still appear, its tooltip should mention the agent failed to start, and "Close" should still terminate the process within the same few seconds.
+
 ## Development
 
 - **TDD workflow:** every Core component was built test-first; keep it that way. All time-dependent code takes a `TimeProvider` so tests use `FakeTimeProvider` — no sleeps or polling.
