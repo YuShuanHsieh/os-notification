@@ -44,13 +44,14 @@ impl IdentityProvider for EnvIdentity {
 #[derive(Debug, PartialEq)]
 pub enum TokenPoll {
     Pending,
-    Success { id_token: String },
+    Success { id_token: String, refresh_token: Option<String> },
     Failed(String),
 }
 
 pub fn parse_token_poll(body: &serde_json::Value) -> TokenPoll {
     if let Some(id_token) = body.get("id_token").and_then(|v| v.as_str()) {
-        return TokenPoll::Success { id_token: id_token.to_string() };
+        let refresh_token = body.get("refresh_token").and_then(|v| v.as_str()).map(str::to_string);
+        return TokenPoll::Success { id_token: id_token.to_string(), refresh_token };
     }
     match body.get("error").and_then(|v| v.as_str()) {
         Some("authorization_pending") => TokenPoll::Pending,
@@ -78,12 +79,29 @@ pub fn oid_from_id_token(id_token: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow!("id_token has no oid claim"))
 }
 
+/// Scope string for the device-code sign-in request: always includes offline_access (so a
+/// refresh token comes back, letting AadTokenProvider mint later scoped tokens silently),
+/// plus any caller-supplied extra scopes such as the NATS external-auth-service scope
+/// (design: NATS WebSocket + pluggable auth §4).
+fn device_code_scope(extra_scopes: &[String]) -> String {
+    let mut scopes = vec!["openid".to_string(), "profile".to_string(), "offline_access".to_string()];
+    scopes.extend(extra_scopes.iter().cloned());
+    scopes.join(" ")
+}
+
 /// OIDC device-code sign-in (spec §7): the WAM broker replacement.
 pub struct DeviceCodeIdentity {
     pub client_id: String,
     pub tenant: String,
     pub device_id: String,
     pub renderer: Arc<dyn ToastRenderer>,
+    /// Additional OAuth scopes to request during sign-in, beyond `openid profile
+    /// offline_access` — e.g. the NATS external-auth-service scope, so a single sign-in
+    /// covers both identity and later silent NATS-auth token acquisition.
+    pub extra_scopes: Vec<String>,
+    /// Populated with the refresh token after a successful sign-in, so AadTokenProvider can
+    /// mint additional-scope access tokens later without a second interactive sign-in.
+    pub refresh_token_sink: Option<Arc<tokio::sync::Mutex<Option<String>>>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -101,9 +119,10 @@ impl IdentityProvider for DeviceCodeIdentity {
         let http = reqwest::Client::new();
         let base = format!("https://login.microsoftonline.com/{}/oauth2/v2.0", self.tenant);
 
+        let scope = device_code_scope(&self.extra_scopes);
         let dc: DeviceCodeResponse = http
             .post(format!("{base}/devicecode"))
-            .form(&[("client_id", self.client_id.as_str()), ("scope", "openid profile")])
+            .form(&[("client_id", self.client_id.as_str()), ("scope", scope.as_str())])
             .send()
             .await?
             .error_for_status()?
@@ -145,8 +164,11 @@ impl IdentityProvider for DeviceCodeIdentity {
                 .await?;
             match parse_token_poll(&body) {
                 TokenPoll::Pending => continue,
-                TokenPoll::Success { id_token } => {
+                TokenPoll::Success { id_token, refresh_token } => {
                     let oid = oid_from_id_token(&id_token)?;
+                    if let (Some(sink), Some(rt)) = (&self.refresh_token_sink, refresh_token) {
+                        *sink.lock().await = Some(rt);
+                    }
                     return Ok(AgentIdentity {
                         user_id: format!("u_{oid}"),
                         device_id: self.device_id.clone(),
@@ -191,7 +213,11 @@ mod tests {
         );
         assert_eq!(
             parse_token_poll(&serde_json::json!({"id_token": "abc", "access_token": "def"})),
-            TokenPoll::Success { id_token: "abc".into() }
+            TokenPoll::Success { id_token: "abc".into(), refresh_token: None }
+        );
+        assert_eq!(
+            parse_token_poll(&serde_json::json!({"id_token": "abc", "refresh_token": "rt-1"})),
+            TokenPoll::Success { id_token: "abc".into(), refresh_token: Some("rt-1".into()) }
         );
         assert_eq!(
             parse_token_poll(&serde_json::json!({"error": "expired_token", "error_description": "gone"})),
@@ -200,6 +226,15 @@ mod tests {
         assert_eq!(
             parse_token_poll(&serde_json::json!({})),
             TokenPoll::Failed("malformed token response".into())
+        );
+    }
+
+    #[test]
+    fn device_code_scope_includes_offline_access_and_extra_scopes() {
+        assert_eq!(device_code_scope(&[]), "openid profile offline_access");
+        assert_eq!(
+            device_code_scope(&["api://x/Nats.Connect".to_string()]),
+            "openid profile offline_access api://x/Nats.Connect"
         );
     }
 

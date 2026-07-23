@@ -50,6 +50,8 @@ async fn main() -> anyhow::Result<()> {
             tenant: std::env::var("NOTIFY_AAD_TENANT_ID").unwrap_or_else(|_| "organizations".into()),
             device_id: std::env::var("NOTIFY_DEVICE_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(default_device_id),
             renderer: renderer.clone(),
+            extra_scopes: Vec::new(),
+            refresh_token_sink: None,
         }),
         _ => Arc::new(EnvIdentity),
     };
