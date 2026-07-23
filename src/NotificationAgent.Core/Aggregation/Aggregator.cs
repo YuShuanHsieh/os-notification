@@ -6,7 +6,9 @@ namespace NotificationAgent.Core.Aggregation;
 public sealed class AggregatorOptions
 {
     public int MaxBuckets { get; init; } = 100;
+
     public TimeSpan ImportantWindow { get; init; } = TimeSpan.FromSeconds(2);
+
     public TimeSpan NormalWindow { get; init; } = TimeSpan.FromSeconds(10);
 }
 
@@ -17,7 +19,11 @@ public sealed class Aggregator : IAsyncDisposable
     private sealed class Bucket
     {
         public List<InboundNotification> Events { get; } = new();
-        public ITimer? Timer { get; set; }
+
+        public ITimer? Timer
+        {
+            get; set;
+        }
     }
 
     private readonly object _gate = new();
@@ -54,13 +60,19 @@ public sealed class Aggregator : IAsyncDisposable
                     Interlocked.Increment(ref _droppedBucketOverflow);
                     return;
                 }
+
                 bucket = new Bucket();
                 _buckets[key] = bucket;
                 var window = n.Priority == EventPriority.Important
                     ? _options.ImportantWindow : _options.NormalWindow;
                 bucket.Timer = _time.CreateTimer(_ => Flush(key), null, window, Timeout.InfiniteTimeSpan);
             }
-            if (n.Replaceable) bucket.Events.Clear();
+
+            if (n.Replaceable)
+            {
+                bucket.Events.Clear();
+            }
+
             bucket.Events.Add(n);
         }
     }
@@ -76,24 +88,41 @@ public sealed class Aggregator : IAsyncDisposable
                 events = bucket.Events;
             }
         }
+
         if (events is { Count: > 0 })
         {
             var pending = RenderSafeAsync(ToastContentFactory.FromBatch(events));
-            if (!pending.IsCompleted) _ = pending.AsTask();
+            if (!pending.IsCompleted)
+            {
+                _ = pending.AsTask();
+            }
         }
     }
 
     private async ValueTask RenderSafeAsync(ToastRequest toast)
     {
-        try { await _renderAsync(toast).ConfigureAwait(false); }
-        catch { /* best-effort delivery: a render failure must not crash the agent */ }
+        try
+        {
+            await _renderAsync(toast).ConfigureAwait(false);
+        }
+        catch
+        { /* best-effort delivery: a render failure must not crash the agent */
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
         List<(string, EventPriority)> keys;
-        lock (_gate) keys = _buckets.Keys.ToList();
-        foreach (var key in keys) Flush(key);
+        lock (_gate)
+        {
+            keys = _buckets.Keys.ToList();
+        }
+
+        foreach (var key in keys)
+        {
+            Flush(key);
+        }
+
         await Task.CompletedTask;
     }
 }

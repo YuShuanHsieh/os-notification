@@ -1,0 +1,21 @@
+<Project>
+  <PropertyGroup>
+    <!-- Apply the SDK's recommended analyzer set to every project. -->
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CodeAnalysisTreatWarningsAsErrors>true</CodeAnalysisTreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      StyleCop remains one of the most widely recognized C# style rule sets.
+      Keep this dependency private so it never flows to project consumers.
+    -->
+    <PackageReference Include="StyleCop.Analyzers"
+                      Version="1.2.0-beta.556"
+                      PrivateAssets="all"
+                      IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive" />
+  </ItemGroup>
+</Project>

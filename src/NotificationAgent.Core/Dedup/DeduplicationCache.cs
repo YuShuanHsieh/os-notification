@@ -26,10 +26,14 @@ public sealed class DeduplicationCache
         {
             PurgeExpired(now);
             if (_expiryByKey.TryGetValue(key, out var existing) && existing > now)
+            {
                 return false;
+            }
 
             while (_expiryByKey.Count >= _capacity && _insertionOrder.Count > 0)
+            {
                 DequeueOne();
+            }
 
             var expires = now + _ttl.Ticks;
             _expiryByKey[key] = expires;
@@ -38,19 +42,33 @@ public sealed class DeduplicationCache
         }
     }
 
-    public int Count { get { lock (_gate) return _expiryByKey.Count; } }
+    public int Count
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _expiryByKey.Count;
+            }
+        }
+    }
 
     private void PurgeExpired(long now)
     {
         while (_insertionOrder.Count > 0 && _insertionOrder.Peek().ExpiresAtTicks <= now)
+        {
             DequeueOne();
+        }
     }
 
     private void DequeueOne()
     {
         var (key, expiresAt) = _insertionOrder.Dequeue();
+
         // A re-added key leaves a stale queue entry behind; only remove on exact match.
         if (_expiryByKey.TryGetValue(key, out var current) && current == expiresAt)
+        {
             _expiryByKey.Remove(key);
+        }
     }
 }

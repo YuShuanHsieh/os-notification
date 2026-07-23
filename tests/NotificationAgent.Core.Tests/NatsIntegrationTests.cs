@@ -15,6 +15,7 @@ namespace NotificationAgent.Core.Tests;
 public class NatsIntegrationTests
 {
     private readonly ITestOutputHelper _output;
+
     public NatsIntegrationTests(ITestOutputHelper output) => _output = output;
 
     private static bool NatsAvailable()
@@ -24,7 +25,10 @@ public class NatsIntegrationTests
             using var client = new TcpClient();
             return client.ConnectAsync("127.0.0.1", 4222).Wait(1000);
         }
-        catch { return false; }
+        catch
+        {
+            return false;
+        }
     }
 
     private sealed class StubIdentity : IIdentityProvider
@@ -36,9 +40,14 @@ public class NatsIntegrationTests
     private sealed class RecordingRenderer : IToastRenderer
     {
         public List<ToastRequest> Shown { get; } = new();
+
         public ValueTask<DateTimeOffset> ShowAsync(ToastRequest toast, CancellationToken ct = default)
         {
-            lock (Shown) Shown.Add(toast);
+            lock (Shown)
+            {
+                Shown.Add(toast);
+            }
+
             return ValueTask.FromResult(DateTimeOffset.UtcNow);
         }
     }
@@ -64,8 +73,19 @@ public class NatsIntegrationTests
         {
             await foreach (var msg in probe.SubscribeAsync<byte[]>(options.AckSubject))
             {
-                lock (acks) acks.Add(Encoding.UTF8.GetString(msg.Data!));
-                lock (acks) if (acks.Count >= 2) { ackReady.TrySetResult(); break; }
+                lock (acks)
+                {
+                    acks.Add(Encoding.UTF8.GetString(msg.Data!));
+                }
+
+                lock (acks)
+                {
+                    if (acks.Count >= 2)
+                    {
+                        ackReady.TrySetResult();
+                        break;
+                    }
+                }
             }
         });
         await Task.Delay(500); // let both subscriptions settle (Core NATS has no replay)
