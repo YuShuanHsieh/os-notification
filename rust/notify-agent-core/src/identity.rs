@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use base64::Engine;
 
+use crate::nats_auth::AccessTokenProvider;
 use crate::toast::{ToastRenderer, ToastRequest};
 
 #[derive(Debug, Clone)]
@@ -180,6 +181,59 @@ impl IdentityProvider for DeviceCodeIdentity {
     }
 }
 
+/// Silently mints AAD access tokens for an additional scope by exchanging the refresh token
+/// DeviceCodeIdentity captured during sign-in — this crate's stand-in for MSAL's
+/// AcquireTokenSilent cache, which C#'s MsalIdentityProvider.GetAccessTokenAsync relies on
+/// (design: NATS WebSocket + pluggable auth §4).
+pub struct AadTokenProvider {
+    pub client_id: String,
+    pub tenant: String,
+    pub scope: String,
+    pub refresh_token: Arc<tokio::sync::Mutex<Option<String>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct RefreshTokenResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+}
+
+#[async_trait]
+impl AccessTokenProvider for AadTokenProvider {
+    async fn access_token(&self) -> anyhow::Result<String> {
+        tracing::debug!(scope = %self.scope, "aad: requesting access token via refresh_token grant");
+        let refresh_token = self
+            .refresh_token
+            .lock()
+            .await
+            .clone()
+            .context("no AAD refresh token available; device-code sign-in must complete before the NATS auth callback runs")?;
+
+        let http = reqwest::Client::new();
+        let base = format!("https://login.microsoftonline.com/{}/oauth2/v2.0", self.tenant);
+        let response: RefreshTokenResponse = http
+            .post(format!("{base}/token"))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", self.client_id.as_str()),
+                ("refresh_token", refresh_token.as_str()),
+                ("scope", self.scope.as_str()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        if let Some(rotated) = response.refresh_token {
+            tracing::debug!("aad: refresh token rotated");
+            *self.refresh_token.lock().await = Some(rotated);
+        }
+        tracing::debug!("aad: access token acquired");
+        Ok(response.access_token)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +304,17 @@ mod tests {
         assert_eq!(id.device_id, "d-test");
         std::env::remove_var("NOTIFY_USER_ID");
         std::env::remove_var("NOTIFY_DEVICE_ID");
+    }
+
+    #[tokio::test]
+    async fn aad_token_provider_errors_without_a_refresh_token_yet() {
+        let provider = AadTokenProvider {
+            client_id: "c".into(),
+            tenant: "organizations".into(),
+            scope: "api://x/Nats.Connect".into(),
+            refresh_token: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+
+        assert!(provider.access_token().await.is_err());
     }
 }
