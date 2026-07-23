@@ -51,6 +51,11 @@ access:
         RUN dotnet restore tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj --locked-mode
         (excluded from the .sln today per AGENTS.md; restored separately, same as `dotnet build`/`test` already treat them in AGENTS.md's validation commands)
 
+   A `RUN` step immediately after the `COPY`, before any restore, checks that
+   all six committed `packages.lock.json` files actually exist and fails the
+   build with a clear message if one is missing (see Error handling below —
+   `--locked-mode` alone does not catch a fully missing lock file).
+
    This bakes into image layers: the resolved NuGet global-packages cache
    (~/.nuget/packages) AND each project's obj/project.assets.json — both
    produced by a restore that ran with network access at `docker build` time.
@@ -127,11 +132,20 @@ Documents:
 
 ## Error handling
 
-- **Lock file drift:** `--locked-mode` restore (during refresh, which has
-  network) exits non-zero if `packages.lock.json` doesn't match the project's
-  references — surfaced as a normal `docker build` failure with NuGet's
-  existing error message; the fix is to refresh and commit, not to catch or
-  suppress this.
+- **Stale lock file:** `--locked-mode` restore (during refresh, which has
+  network) exits non-zero if `packages.lock.json`'s content hash doesn't match
+  the project's resolved references — surfaced as a `docker build` failure
+  with NuGet's `NU1403` error; the fix is to refresh and commit, not to catch
+  or suppress this.
+- **Missing lock file:** verified empirically (four independent reproductions,
+  including an isolated clean clone, on `mcr.microsoft.com/dotnet/sdk:10.0`
+  SDK `10.0.302`) that `--locked-mode` does **not** catch a fully missing
+  `packages.lock.json` — NuGet silently regenerates it and restore succeeds,
+  which would let a deleted lock file quietly restore different package
+  versions than intended. An explicit `RUN` step in the Dockerfile (right
+  after `COPY`, before any restore) checks all six lock files exist and fails
+  the build immediately with a clear message if one is absent, independent of
+  NuGet's own behavior for this case.
 - **Accidental network use in the offline step:** if any build/test/format
   invocation under `--network none` needed the network (e.g., an
   incompletely-restored package, or a future change that adds a package
@@ -153,8 +167,8 @@ steps):
    build, Windows test project build.
 3. As a negative control, confirm that deliberately deleting a project's
    `packages.lock.json` and rerunning the image build fails at the
-   `--locked-mode` restore step (proves the lock file is actually being
-   enforced, not silently ignored).
+   file-existence guard step (proves a deleted lock file is actually caught,
+   not silently regenerated).
 
 ## Non-goals / explicitly deferred
 

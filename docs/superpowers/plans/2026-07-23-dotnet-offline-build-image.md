@@ -177,6 +177,31 @@ RUN dotnet restore src/NotificationAgent.Windows/NotificationAgent.Windows.cspro
 RUN dotnet restore tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj --locked-mode
 ```
 
+> **Amendment (discovered during Task 3, human-approved fix in commit `757fe4c`):**
+> `dotnet restore --locked-mode` on SDK `10.0.302` was empirically verified (4 independent
+> reproductions, including an isolated clean clone) to only fail on a *stale* lock file
+> (`NU1403`) — a fully *missing* `packages.lock.json` is silently regenerated (exit 0). The
+> comment above claiming `--locked-mode` catches "missing or doesn't match" is therefore
+> **wrong** and was corrected. A guard `RUN` step was added right after `COPY . .`, before
+> any restore, checking all six lock files exist and failing fast with a clear message if
+> one is absent:
+>
+> ```dockerfile
+> RUN for f in \
+>         src/NotificationAgent.Core/packages.lock.json \
+>         src/NotificationAgent.ConsoleHost/packages.lock.json \
+>         src/NotificationAgent.Windows/packages.lock.json \
+>         tests/NotificationAgent.Core.Tests/packages.lock.json \
+>         tests/NotificationAgent.Windows.Tests/packages.lock.json \
+>         tools/TestPublisher/packages.lock.json; \
+>     do \
+>         test -f "$f" || { echo "missing lock file: $f" >&2; exit 1; }; \
+>     done
+> ```
+>
+> See the design doc's Error handling section for the full explanation. Task 3's negative
+> control (below) tests this guard, not raw `--locked-mode`, for the missing-file case.
+
 - [ ] **Step 3: Build the image**
 
 ```bash
@@ -234,22 +259,28 @@ git commit -m "build: add offline .NET build image (docker/dotnet-offline.Docker
 - Create: `docker/README.md`
 
 **Interfaces:**
-- Consumes: the `notification-agent-offline` image workflow from Tasks 1–2 (documents and re-verifies it; doesn't change the Dockerfile or lock files).
+- Consumes: the `notification-agent-offline` image workflow from Tasks 1–2, including the file-existence guard step added in the Task 2 fix (commit `757fe4c`) — documents and re-verifies it; doesn't change the Dockerfile or lock files further.
 
-- [ ] **Step 1: Prove `--locked-mode` actually blocks a stale/missing lock file (negative control)**
+- [ ] **Step 1: Prove a missing lock file is actually caught (negative control)**
+
+> **Amendment:** the original version of this step expected `--locked-mode` itself to fail
+> on a missing lock file with `NU1004`. That was verified false (see Task 2's amendment
+> above) — `--locked-mode` silently regenerates a missing lock file instead. The guard step
+> added in commit `757fe4c` is what actually catches this now; the command and file removed
+> are unchanged, only the expected output differs.
 
 ```bash
 mv src/NotificationAgent.Core/packages.lock.json /tmp/packages.lock.json.bak
 docker build -f docker/dotnet-offline.Dockerfile -t notification-agent-offline-negative-test . 2>&1 | tail -20
 ```
 
-Expected: the build **fails** at the `dotnet restore NotificationAgent.sln --locked-mode` step, with an error like:
+Expected: the build **fails** at the guard `RUN` step (before any `dotnet restore` step runs), with:
 
 ```
-error NU1004: The packages lock file is missing and lock file creation has been explicitly disabled.
+missing lock file: src/NotificationAgent.Core/packages.lock.json
 ```
 
-(or `NU1403` content-hash errors if the file exists but is stale — either way, a non-zero exit and a clear NuGet error, not a silent success). This confirms the lock file is genuinely enforced, not silently ignored.
+and a non-zero exit code. This confirms a deleted lock file is genuinely caught, not silently regenerated.
 
 - [ ] **Step 2: Restore the lock file and confirm the repo is clean**
 
@@ -279,10 +310,15 @@ pick up a newer .NET 10 SDK patch:
 docker build -f docker/dotnet-offline.Dockerfile -t notification-agent-offline .
 ```
 
-This is the *only* step that talks to `nuget.org`. It restores every project
-with `--locked-mode`, which fails the build if a project's `packages.lock.json`
-doesn't match its `PackageReference`s. If you changed dependencies, regenerate
-the affected lock file(s) first:
+This is the *only* step that talks to `nuget.org`. Before any restore runs, it
+checks that all six `packages.lock.json` files listed below actually exist —
+failing fast with a clear message if one was deleted (NuGet's own
+`--locked-mode` restore silently regenerates a missing lock file instead of
+failing, so this guard exists to catch that case explicitly). It then
+restores every project with `--locked-mode`, which fails the build if a
+project's `packages.lock.json` is *stale* (its content hash doesn't match the
+`PackageReference`s it was generated from). If you changed dependencies,
+regenerate the affected lock file(s) first:
 
 ```bash
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
