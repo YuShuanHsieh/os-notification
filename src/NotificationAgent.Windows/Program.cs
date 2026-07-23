@@ -30,13 +30,5 @@ var authProvider = NatsAuthSelection.Select(
     msalIdentity,
     new HttpClient());
 
-await using var host = await AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider);
-
-var shutdown = new TaskCompletionSource();
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    shutdown.TrySetResult();
-};
-AppDomain.CurrentDomain.ProcessExit += (_, _) => shutdown.TrySetResult();
-await shutdown.Task;
+Application.Run(new TrayApplicationContext(
+    ct => AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider, ct)));
