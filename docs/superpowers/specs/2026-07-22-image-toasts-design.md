@@ -38,18 +38,22 @@ Approaches considered: (A) additive optional field + schemaVersion bump — chos
 
 `ImageCache::new(cache_dir: PathBuf) -> Self`; `async fn fetch(&self, url: &str) -> Option<PathBuf>`.
 
-- https only (re-checked here — defense in depth with the parser).
-- Streaming download with a **3 MB hard cap** (abort mid-stream when exceeded), **3 s total timeout**, response `Content-Type` must start with `image/`.
+- https only (re-checked here — defense in depth with the parser); redirects are disabled so an approved URL cannot downgrade or redirect to a private host.
+- Streaming download with a **3 MB hard cap** (abort mid-stream when exceeded), **3 s total timeout for cache lookup, download, and eviction**, response `Content-Type` must start with `image/`.
 - Cache file name = hex SHA-256 of the URL (no extension needed for toast rendering; no path-traversal surface). Existing file → returned immediately, no network.
 - Bound: after a successful write, if the directory holds > 50 files, delete oldest-by-mtime beyond 50. Best-effort eviction (errors ignored).
-- Every failure path (scheme, timeout, cap, content-type, IO) returns `None` with a debug log.
+- Every failure path (scheme, timeout, cap, content-type, IO) returns `None` with a debug log that includes only a safe host, never the full URL.
 - Windows head cache dir: `%LOCALAPPDATA%\DesktopNotificationAgent\image-cache`. The console head never instantiates the cache.
 - Dependency note: sha2 crate added; reqwest already present.
 
 ## Rendering
 
 - **Windows head:** if `ToastRequest.image` is set and `fetch` returns a path, prepend to the binding: `<image placement="appLogoOverride" hint-crop="circle" src="file:///{path-with-forward-slashes}"/>` (omit `hint-crop` for `Square`). On `None`: today's XML exactly. The appLogoOverride slot is separate from the ≤3-text/1-button §7 budget. The fetch happens inside `show()` before XML build (bounded by the 3s timeout — an acceptable, capped delay).
-- **Console head:** prints `        [image] {url} ({shape})` after the attribution line. No download on Linux.
+- **Console head:** prints the following after the attribution line. No download on Linux.
+
+  ```text
+          [image] {url} ({shape})
+  ```
 
 ## Testing
 

@@ -45,6 +45,11 @@ if (scenario is not null && !PublishSpec.ApplyScenario(spec, scenario))
 }
 
 // Legacy positionals: [title] [message] [priority] [count] [imageUrl]
+if (positionals.Length > 5)
+{
+    return Usage("too many legacy positional arguments");
+}
+
 if (positionals.Length > 0)
 {
     spec.Title = positionals[0];
@@ -118,6 +123,7 @@ for (var i = 0; i < flags.Length; i++)
                 }
 
                 spec.Count = count;
+                spec.Messages = null;
                 break;
             case "--image-url":
                 spec.ImageUrl = Next();

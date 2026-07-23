@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
+use url::Url;
 
 /// Best-effort local image cache for toast rendering (design 2026-07-22).
 /// Every failure path returns None: the toast renders without the image.
@@ -37,29 +38,39 @@ impl ImageCache {
     }
 
     pub fn with_options(dir: PathBuf, options: ImageCacheOptions) -> Self {
-        Self { dir, options, http: reqwest::Client::new() }
+        Self {
+            dir,
+            options,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("image cache HTTP client configuration is valid"),
+        }
     }
 
     pub async fn fetch(&self, url: &str) -> Option<PathBuf> {
-        if self.options.require_https && !url.starts_with("https://") {
-            tracing::debug!(url, "image url rejected: https required");
+        let Some(url) = parse_image_url(url, self.options.require_https) else {
+            tracing::debug!(host = safe_url_host(url), "image url rejected");
             return None;
-        }
-        let path = self.dir.join(hex_sha256(url));
-        if path.exists() {
-            return Some(path);
-        }
-        match tokio::time::timeout(self.options.timeout, self.download(url, &path)).await {
-            Ok(Ok(())) => {
-                self.evict_beyond_cap();
-                Some(path)
+        };
+        let path = self.dir.join(hex_sha256(url.as_str()));
+        match tokio::time::timeout(self.options.timeout, async {
+            if tokio::fs::try_exists(&path).await? {
+                return Ok::<PathBuf, anyhow::Error>(path.clone());
             }
+            self.download(url.as_str(), &path).await?;
+            self.evict_beyond_cap().await;
+            Ok::<PathBuf, anyhow::Error>(path.clone())
+        })
+        .await
+        {
+            Ok(Ok(path)) => Some(path),
             Ok(Err(e)) => {
-                tracing::debug!(url, error = %e, "image fetch failed");
+                tracing::debug!(host = safe_url_host(url.as_str()), error = %e, "image fetch failed");
                 None
             }
             Err(_) => {
-                tracing::debug!(url, "image fetch timed out");
+                tracing::debug!(host = safe_url_host(url.as_str()), "image fetch timed out");
                 None
             }
         }
@@ -72,7 +83,10 @@ impl ImageCache {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        anyhow::ensure!(content_type.starts_with("image/"), "not an image: {content_type}");
+        anyhow::ensure!(
+            content_type.starts_with("image/"),
+            "not an image: {content_type}"
+        );
 
         let mut body: Vec<u8> = Vec::new();
         let mut stream = resp.bytes_stream();
@@ -100,22 +114,55 @@ impl ImageCache {
     }
 
     /// Keep at most max_files entries; delete oldest by mtime. Best-effort.
-    fn evict_beyond_cap(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
-        let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
-            .flatten()
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                meta.is_file().then(|| (meta.modified().ok().unwrap_or(std::time::UNIX_EPOCH), e.path()))
+    async fn evict_beyond_cap(&self) {
+        let dir = self.dir.clone();
+        let max_files = self.options.max_files;
+        let _ = tokio::task::spawn_blocking(move || evict_beyond_cap(&dir, max_files)).await;
+    }
+}
+
+fn parse_image_url(value: &str, require_https: bool) -> Option<Url> {
+    let url = Url::parse(value).ok()?;
+    if require_https && url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    Some(url)
+}
+
+fn safe_url_host(value: &str) -> String {
+    Url::parse(value)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "invalid".into())
+}
+
+/// Keep at most max_files entries; delete oldest by mtime. Best-effort.
+fn evict_beyond_cap(dir: &Path, max_files: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            meta.is_file().then(|| {
+                (
+                    meta.modified().ok().unwrap_or(std::time::UNIX_EPOCH),
+                    e.path(),
+                )
             })
-            .collect();
-        if files.len() <= self.options.max_files {
-            return;
-        }
-        files.sort_by_key(|(mtime, _)| *mtime);
-        for (_, path) in files.iter().take(files.len() - self.options.max_files) {
-            let _ = std::fs::remove_file(path);
-        }
+        })
+        .collect();
+    if files.len() <= max_files {
+        return;
+    }
+    files.sort_by_key(|(mtime, _)| *mtime);
+    for (_, path) in files.iter().take(files.len() - max_files) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -160,7 +207,10 @@ mod tests {
     fn test_cache(dir: &std::path::Path) -> ImageCache {
         ImageCache::with_options(
             dir.to_path_buf(),
-            ImageCacheOptions { require_https: false, ..Default::default() },
+            ImageCacheOptions {
+                require_https: false,
+                ..Default::default()
+            },
         )
     }
 
@@ -191,11 +241,19 @@ mod tests {
         let dir = tempdir();
         let cache = ImageCache::with_options(
             dir.clone(),
-            ImageCacheOptions { require_https: false, max_bytes: 16, ..Default::default() },
+            ImageCacheOptions {
+                require_https: false,
+                max_bytes: 16,
+                ..Default::default()
+            },
         );
         let url = serve_once(http_response("image/png", &[0u8; 64]), Duration::ZERO).await;
         assert_eq!(cache.fetch(&url).await, None);
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "no partial file left");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "no partial file left"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -204,7 +262,11 @@ mod tests {
         let dir = tempdir();
         let cache = ImageCache::with_options(
             dir.clone(),
-            ImageCacheOptions { require_https: false, timeout: Duration::from_millis(200), ..Default::default() },
+            ImageCacheOptions {
+                require_https: false,
+                timeout: Duration::from_millis(200),
+                ..Default::default()
+            },
         );
         let url = serve_once(http_response("image/png", b"late"), Duration::from_secs(5)).await;
         assert_eq!(cache.fetch(&url).await, None);
@@ -230,11 +292,19 @@ mod tests {
         }
         let cache = ImageCache::with_options(
             dir.clone(),
-            ImageCacheOptions { require_https: false, max_files: 3, ..Default::default() },
+            ImageCacheOptions {
+                require_https: false,
+                max_files: 3,
+                ..Default::default()
+            },
         );
         let url = serve_once(http_response("image/jpeg", b"JPG"), Duration::ZERO).await;
         cache.fetch(&url).await.expect("fetch succeeds");
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3, "evicted down to max_files");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            3,
+            "evicted down to max_files"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -242,7 +312,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "img-cache-test-{}-{:x}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir

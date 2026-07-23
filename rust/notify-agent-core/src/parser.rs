@@ -5,7 +5,6 @@ use crate::model::{InboundNotification, Priority};
 
 pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
 pub const MAX_JSON_DEPTH: usize = 16;
-pub const MAX_IMAGE_URL_BYTES: usize = 2048;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -36,8 +35,8 @@ pub fn parse_event(
         return Err(ParseError::TooDeep);
     }
 
-    let wire: WireEvent = serde_json::from_slice(payload)
-        .map_err(|e| ParseError::Json(e.to_string()))?;
+    let wire: WireEvent =
+        serde_json::from_slice(payload).map_err(|e| ParseError::Json(e.to_string()))?;
 
     let event_id = require(wire.event_id, "eventId")?;
     let user_id = require(wire.target.and_then(|t| t.user_id), "target.userId")?;
@@ -48,7 +47,12 @@ pub fn parse_event(
 
     let notification_type = non_blank(wire.notification_type).unwrap_or_else(|| "unknown".into());
     let classification = wire.classification.unwrap_or_default();
-    let priority = match classification.priority.as_deref().map(str::to_lowercase).as_deref() {
+    let priority = match classification
+        .priority
+        .as_deref()
+        .map(str::to_lowercase)
+        .as_deref()
+    {
         Some("critical") => Priority::Critical,
         Some("important") => Priority::Important,
         _ => Priority::Normal,
@@ -59,7 +63,8 @@ pub fn parse_event(
     Ok(InboundNotification {
         seq,
         aggregation_key: non_blank(classification.aggregation_key).unwrap_or(notification_type),
-        deduplication_key: non_blank(classification.deduplication_key).unwrap_or_else(|| event_id.clone()),
+        deduplication_key: non_blank(classification.deduplication_key)
+            .unwrap_or_else(|| event_id.clone()),
         event_id,
         user_id,
         title,
@@ -91,15 +96,18 @@ fn parse_image(wire: Option<WireImage>) -> Option<crate::model::ImageRef> {
         tracing::debug!("dropping image with missing or blank url");
         return None;
     };
-    if !url.starts_with("https://") || url.len() > MAX_IMAGE_URL_BYTES {
-        tracing::debug!(url, "dropping invalid image url");
+    let Some(url) = crate::action_url::validate(&url) else {
+        tracing::debug!("dropping invalid image url");
         return None;
-    }
+    };
     let shape = match wire.shape.as_deref().map(str::to_lowercase).as_deref() {
         Some("square") => crate::model::ImageShape::Square,
         _ => crate::model::ImageShape::Circle,
     };
-    Some(crate::model::ImageRef { url, shape })
+    Some(crate::model::ImageRef {
+        url: url.into(),
+        shape,
+    })
 }
 
 /// String-aware structural depth scan; enforces the depth limit before the
@@ -235,13 +243,22 @@ mod tests {
         assert_eq!(n.message, "Invoice INV-8492 is ready for review.");
         assert_eq!(n.secondary_text.as_deref(), Some("Contoso Billing"));
         assert_eq!(n.action_label.as_deref(), Some("View invoice"));
-        assert_eq!(n.action_url.as_deref(), Some("https://app.example.com/invoices/8492"));
+        assert_eq!(
+            n.action_url.as_deref(),
+            Some("https://app.example.com/invoices/8492")
+        );
         assert_eq!(n.priority, Priority::Normal);
         assert_eq!(n.aggregation_key, "billing.invoice.ready");
         assert_eq!(n.deduplication_key, "invoice.ready:8492");
         assert!(!n.replaceable);
-        assert_eq!(n.producer_created_at, Some("2026-07-15T08:30:00.100Z".parse().unwrap()));
-        assert_eq!(n.server_published_at, Some("2026-07-15T08:30:00.150Z".parse().unwrap()));
+        assert_eq!(
+            n.producer_created_at,
+            Some("2026-07-15T08:30:00.100Z".parse().unwrap())
+        );
+        assert_eq!(
+            n.server_published_at,
+            Some("2026-07-15T08:30:00.150Z".parse().unwrap())
+        );
         assert_eq!(n.received_at, received_at());
     }
 
@@ -269,7 +286,7 @@ mod tests {
                         "target":{"userId":"u1"},"content":{"title":"t","message":"m"}}"#;
         let n = parse_event(json, received_at(), 1).unwrap();
         assert_eq!(n.deduplication_key, "e1"); // defaults to eventId
-        assert_eq!(n.aggregation_key, "a.b");  // defaults to notificationType
+        assert_eq!(n.aggregation_key, "a.b"); // defaults to notificationType
         assert_eq!(n.priority, Priority::Normal);
         assert!(!n.replaceable);
         assert_eq!(n.action_label, None);
@@ -278,7 +295,8 @@ mod tests {
 
     #[test]
     fn aggregation_key_falls_back_to_unknown() {
-        let json = br#"{"eventId":"e1","target":{"userId":"u1"},"content":{"title":"t","message":"m"}}"#;
+        let json =
+            br#"{"eventId":"e1","target":{"userId":"u1"},"content":{"title":"t","message":"m"}}"#;
         let n = parse_event(json, received_at(), 1).unwrap();
         assert_eq!(n.aggregation_key, "unknown");
     }
@@ -286,13 +304,28 @@ mod tests {
     #[test]
     fn rejects_missing_required_fields() {
         for (json, field) in [
-            (r#"{"target":{"userId":"u1"},"content":{"title":"t","message":"m"}}"#, "eventId"),
-            (r#"{"eventId":"e1","content":{"title":"t","message":"m"}}"#, "target.userId"),
-            (r#"{"eventId":"e1","target":{"userId":"u1"},"content":{"message":"m"}}"#, "content.title"),
-            (r#"{"eventId":"e1","target":{"userId":"u1"},"content":{"title":"t"}}"#, "content.message"),
+            (
+                r#"{"target":{"userId":"u1"},"content":{"title":"t","message":"m"}}"#,
+                "eventId",
+            ),
+            (
+                r#"{"eventId":"e1","content":{"title":"t","message":"m"}}"#,
+                "target.userId",
+            ),
+            (
+                r#"{"eventId":"e1","target":{"userId":"u1"},"content":{"message":"m"}}"#,
+                "content.title",
+            ),
+            (
+                r#"{"eventId":"e1","target":{"userId":"u1"},"content":{"title":"t"}}"#,
+                "content.message",
+            ),
         ] {
             let err = parse_event(json.as_bytes(), received_at(), 1).unwrap_err();
-            assert!(err.to_string().contains(field), "error {err} should name {field}");
+            assert!(
+                err.to_string().contains(field),
+                "error {err} should name {field}"
+            );
         }
     }
 
@@ -310,10 +343,16 @@ mod tests {
         // proving the gate did NOT fire at exactly 16.
         let d16 = format!("{}1{}", r#"{"a":"#.repeat(16), "}".repeat(16));
         let err = parse_event(d16.as_bytes(), received_at(), 1).unwrap_err();
-        assert!(err.to_string().contains("missing eventId"), "depth 16 must pass the depth gate, got: {err}");
+        assert!(
+            err.to_string().contains("missing eventId"),
+            "depth 16 must pass the depth gate, got: {err}"
+        );
         let d17 = format!("{}1{}", r#"{"a":"#.repeat(17), "}".repeat(17));
         let err = parse_event(d17.as_bytes(), received_at(), 1).unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("depth"), "got: {err}");
+        assert!(
+            err.to_string().to_lowercase().contains("depth"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -346,7 +385,14 @@ mod tests {
                      "content":{{"title":"t","message":"m",
                                  "image":{{"url":"https://x.example/a.png","shape":"{shape_json}"}}}}}}"#
             );
-            assert_eq!(parse_event(json.as_bytes(), received_at(), 1).unwrap().image.unwrap().shape, expected);
+            assert_eq!(
+                parse_event(json.as_bytes(), received_at(), 1)
+                    .unwrap()
+                    .image
+                    .unwrap()
+                    .shape,
+                expected
+            );
         }
     }
 
@@ -359,9 +405,10 @@ mod tests {
     #[test]
     fn invalid_image_drops_image_not_event() {
         for bad in [
-            r#"{"url":"http://insecure.example/a.jpg"}"#,          // wrong scheme
-            r#"{"url":""}"#,                                        // blank
-            r#"{"shape":"circle"}"#,                                // no url
+            r#"{"url":"http://insecure.example/a.jpg"}"#, // wrong scheme
+            r#"{"url":"https://user:password@cdn.example/a.jpg"}"#, // credentials
+            r#"{"url":""}"#,                              // blank
+            r#"{"shape":"circle"}"#,                      // no url
         ] {
             let json = format!(
                 r#"{{"eventId":"e1","target":{{"userId":"u1"}},
@@ -374,7 +421,10 @@ mod tests {
 
     #[test]
     fn oversize_image_url_drops_image_not_event() {
-        let url = format!("https://x.example/{}", "a".repeat(MAX_IMAGE_URL_BYTES));
+        let url = format!(
+            "https://x.example/{}",
+            "a".repeat(crate::action_url::MAX_URL_LENGTH)
+        );
         let json = format!(
             r#"{{"eventId":"e1","target":{{"userId":"u1"}},
                  "content":{{"title":"t","message":"m","image":{{"url":"{url}"}}}}}}"#

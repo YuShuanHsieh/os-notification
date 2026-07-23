@@ -1,12 +1,13 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::Duration;
 
-use crate::ack::{AckPayload, TelemetryPublisher, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS};
+use crate::ack::{AckPayload, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS, TelemetryPublisher};
 use crate::aggregator::{Aggregator, AggregatorConfig, RenderSink};
 use crate::dedup::DedupCache;
 use crate::parser;
@@ -26,9 +27,14 @@ pub struct PipelineConfig {
     pub workers: usize,        // design §9 baseline: 2
 }
 
+const ACK_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl Default for PipelineConfig {
     fn default() -> Self {
-        Self { queue_capacity: 500, workers: 2 }
+        Self {
+            queue_capacity: 500,
+            workers: 2,
+        }
     }
 }
 
@@ -70,14 +76,23 @@ impl Pipeline {
                 })
             })
             .collect();
-        Self { tx, dropped_queue_full: Arc::new(AtomicU64::new(0)), _rx: rx, workers }
+        Self {
+            tx,
+            dropped_queue_full: Arc::new(AtomicU64::new(0)),
+            _rx: rx,
+            workers,
+        }
     }
 
     pub fn try_enqueue(&self, evt: ReceivedEvent) -> bool {
         match self.tx.try_send(evt) {
             Ok(()) => true,
             Err(_) => {
-                self.dropped_queue_full.fetch_add(1, Ordering::Relaxed);
+                let dropped = self.dropped_queue_full.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    dropped_queue_full = dropped,
+                    "dropping event because the intake queue is full"
+                );
                 false
             }
         }
@@ -88,7 +103,10 @@ impl Pipeline {
     }
 
     pub fn intake_handle(&self) -> IntakeHandle {
-        IntakeHandle { tx: self.tx.clone(), dropped_queue_full: self.dropped_queue_full.clone() }
+        IntakeHandle {
+            tx: self.tx.clone(),
+            dropped_queue_full: self.dropped_queue_full.clone(),
+        }
     }
 
     /// Close the intake and let workers drain every queued event (spec §5.2:
@@ -114,7 +132,11 @@ impl IntakeHandle {
         match self.tx.try_send(evt) {
             Ok(()) => true,
             Err(_) => {
-                self.dropped_queue_full.fetch_add(1, Ordering::Relaxed);
+                let dropped = self.dropped_queue_full.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    dropped_queue_full = dropped,
+                    "dropping event because the intake queue is full"
+                );
                 false
             }
         }
@@ -145,9 +167,7 @@ async fn process(
         toast_submitted_at: None,
         status: OBSERVED_BY_AGENT.into(),
     };
-    if let Err(e) = telemetry.publish_ack(&ack).await {
-        tracing::warn!(error = %e, "observed ack publish failed");
-    }
+    publish_ack(telemetry, &ack, "observed").await;
     aggregator.add(n);
 }
 
@@ -177,10 +197,18 @@ impl RenderSink for AckingRenderSink {
                 toast_submitted_at: Some(submitted_at),
                 status: SUBMITTED_TO_WINDOWS.into(),
             };
-            if let Err(e) = self.telemetry.publish_ack(&ack).await {
-                tracing::warn!(error = %e, event_id = %source.event_id, "submitted ack publish failed");
-            }
+            publish_ack(self.telemetry.as_ref(), &ack, "submitted").await;
         }
+    }
+}
+
+async fn publish_ack(telemetry: &dyn TelemetryPublisher, ack: &AckPayload, phase: &str) {
+    match tokio::time::timeout(ACK_PUBLISH_TIMEOUT, telemetry.publish_ack(ack)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, %phase, event_id = %ack.event_id, "ack publish failed")
+        }
+        Err(_) => tracing::warn!(%phase, event_id = %ack.event_id, "ack publish timed out"),
     }
 }
 
@@ -201,14 +229,20 @@ pub fn build_agent(
         device_id: device_id.clone(),
     });
     let aggregator = Aggregator::new(aggregator_config, sink);
-    let pipeline = Pipeline::start(pipeline_config, dedup, aggregator.clone(), telemetry, device_id);
+    let pipeline = Pipeline::start(
+        pipeline_config,
+        dedup,
+        aggregator.clone(),
+        telemetry,
+        device_id,
+    );
     (pipeline, aggregator)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ack::{AckPayload, TelemetryPublisher, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS};
+    use crate::ack::{AckPayload, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS, TelemetryPublisher};
     use crate::aggregator::AggregatorConfig;
     use crate::dedup::DedupCache;
     use crate::toast::{ToastRenderer, ToastRequest};
@@ -262,16 +296,29 @@ mod tests {
                  "content":{{"title":"T","message":"M"}},
                  "classification":{{"priority":"critical","deduplicationKey":"{id}"}}}}"#
         );
-        ReceivedEvent { payload: payload.into_bytes(), received_at: received_at(), seq }
+        ReceivedEvent {
+            payload: payload.into_bytes(),
+            received_at: received_at(),
+            seq,
+        }
     }
 
-    fn harness(queue_capacity: usize, workers: usize)
-        -> (Pipeline, crate::aggregator::Aggregator, Arc<RecordingTelemetry>, Arc<RecordingRenderer>)
-    {
+    fn harness(
+        queue_capacity: usize,
+        workers: usize,
+    ) -> (
+        Pipeline,
+        crate::aggregator::Aggregator,
+        Arc<RecordingTelemetry>,
+        Arc<RecordingRenderer>,
+    ) {
         let telemetry = Arc::new(RecordingTelemetry::default());
         let renderer = Arc::new(RecordingRenderer::default());
         let (pipeline, aggregator) = build_agent(
-            PipelineConfig { queue_capacity, workers },
+            PipelineConfig {
+                queue_capacity,
+                workers,
+            },
             AggregatorConfig::default(),
             Arc::new(DedupCache::new(100, Duration::from_secs(600))),
             renderer.clone(),
@@ -300,7 +347,10 @@ mod tests {
         assert_eq!(renderer.shown.lock().unwrap().len(), 1);
         let acks = telemetry.acks.lock().unwrap().clone();
         let observed = acks.iter().find(|a| a.status == OBSERVED_BY_AGENT).unwrap();
-        let submitted = acks.iter().find(|a| a.status == SUBMITTED_TO_WINDOWS).unwrap();
+        let submitted = acks
+            .iter()
+            .find(|a| a.status == SUBMITTED_TO_WINDOWS)
+            .unwrap();
         assert_eq!(observed.event_id, "evt-1");
         assert_eq!(observed.device_id, "d-456");
         assert_eq!(observed.agent_received_at, received_at());
@@ -339,7 +389,14 @@ mod tests {
         wait_until(|| telemetry.acks.lock().unwrap().len() == 2).await;
 
         assert_eq!(renderer.shown.lock().unwrap().len(), 1);
-        assert!(telemetry.acks.lock().unwrap().iter().all(|a| a.event_id == "evt-ok"));
+        assert!(
+            telemetry
+                .acks
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|a| a.event_id == "evt-ok")
+        );
         pipeline.shutdown().await;
         aggregator.shutdown().await;
     }

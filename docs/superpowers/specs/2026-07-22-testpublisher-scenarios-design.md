@@ -10,7 +10,7 @@ Let one CLI command exercise every use case of the schema-1.1 notification forma
 
 ## CLI
 
-```
+```bash
 dotnet run --project tools/TestPublisher -- <userId> [title] [message] [priority] [count] [imageUrl]   # legacy, unchanged
 dotnet run --project tools/TestPublisher -- <userId> --scenario <name> [--flags]
 dotnet run --project tools/TestPublisher -- <userId> [--flags]

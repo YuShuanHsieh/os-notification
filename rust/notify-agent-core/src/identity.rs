@@ -45,6 +45,7 @@ impl IdentityProvider for EnvIdentity {
 #[derive(Debug, PartialEq)]
 pub enum TokenPoll {
     Pending,
+    SlowDown,
     Success { id_token: String, refresh_token: Option<String> },
     Failed(String),
 }
@@ -56,6 +57,7 @@ pub fn parse_token_poll(body: &serde_json::Value) -> TokenPoll {
     }
     match body.get("error").and_then(|v| v.as_str()) {
         Some("authorization_pending") => TokenPoll::Pending,
+        Some("slow_down") => TokenPoll::SlowDown,
         Some(err) => {
             let desc = body.get("error_description").and_then(|v| v.as_str()).unwrap_or("");
             TokenPoll::Failed(format!("{err}: {desc}"))
@@ -147,11 +149,12 @@ impl IdentityProvider for DeviceCodeIdentity {
             .await;
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(dc.expires_in);
+        let mut poll_interval = dc.interval.max(1);
         loop {
             if tokio::time::Instant::now() >= deadline {
                 anyhow::bail!("device-code sign-in timed out");
             }
-            tokio::time::sleep(std::time::Duration::from_secs(dc.interval.max(1))).await;
+            tokio::time::sleep(std::time::Duration::from_secs(poll_interval)).await;
             let body: serde_json::Value = http
                 .post(format!("{base}/token"))
                 .form(&[
@@ -165,6 +168,7 @@ impl IdentityProvider for DeviceCodeIdentity {
                 .await?;
             match parse_token_poll(&body) {
                 TokenPoll::Pending => continue,
+                TokenPoll::SlowDown => { poll_interval = poll_interval.saturating_add(5); continue; }
                 TokenPoll::Success { id_token, refresh_token } => {
                     let oid = oid_from_id_token(&id_token)?;
                     if let (Some(sink), Some(rt)) = (&self.refresh_token_sink, refresh_token) {
@@ -312,6 +316,7 @@ mod tests {
             parse_token_poll(&serde_json::json!({"error": "authorization_pending"})),
             TokenPoll::Pending
         );
+        assert_eq!(parse_token_poll(&serde_json::json!({"error": "slow_down"})), TokenPoll::SlowDown);
         assert_eq!(
             parse_token_poll(&serde_json::json!({"id_token": "abc", "access_token": "def"})),
             TokenPoll::Success { id_token: "abc".into(), refresh_token: None }

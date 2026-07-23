@@ -143,7 +143,7 @@ struct WireImage {
 fn parse_image(wire: Option<WireImage>) -> Option<crate::model::ImageRef> {
     let wire = wire?;
     let url = wire.url.filter(|u| !u.trim().is_empty())?;
-    if !url.starts_with("https://") || url.len() > MAX_IMAGE_URL_BYTES {
+    let Some(url) = crate::action_url::validate(&url) else {
         tracing::debug!("dropping invalid image url");
         return None;
     }
@@ -151,7 +151,7 @@ fn parse_image(wire: Option<WireImage>) -> Option<crate::model::ImageRef> {
         Some("square") => crate::model::ImageShape::Square,
         _ => crate::model::ImageShape::Circle,
     };
-    Some(crate::model::ImageRef { url, shape })
+    Some(crate::model::ImageRef { url: url.into(), shape })
 }
 ```
 
@@ -414,29 +414,35 @@ impl ImageCache {
     }
 
     pub fn with_options(dir: PathBuf, options: ImageCacheOptions) -> Self {
-        Self { dir, options, http: reqwest::Client::new() }
+        Self {
+            dir,
+            options,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("image cache HTTP client configuration is valid"),
+        }
     }
 
     pub async fn fetch(&self, url: &str) -> Option<PathBuf> {
-        if self.options.require_https && !url.starts_with("https://") {
-            tracing::debug!(url, "image url rejected: https required");
+        if self.options.require_https && crate::action_url::validate(url).is_none() {
+            tracing::debug!("image url rejected: https required");
             return None;
         }
         let path = self.dir.join(hex_sha256(url));
-        if path.exists() {
-            return Some(path);
-        }
-        match tokio::time::timeout(self.options.timeout, self.download(url, &path)).await {
-            Ok(Ok(())) => {
-                self.evict_beyond_cap();
-                Some(path)
-            }
+        match tokio::time::timeout(self.options.timeout, async {
+            if tokio::fs::try_exists(&path).await? { return Ok(path.clone()); }
+            self.download(url, &path).await?;
+            self.evict_beyond_cap().await;
+            Ok(path.clone())
+        }).await {
+            Ok(Ok(path)) => Some(path),
             Ok(Err(e)) => {
-                tracing::debug!(url, error = %e, "image fetch failed");
+                tracing::debug!(host = ?url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)), error = %e, "image fetch failed");
                 None
             }
             Err(_) => {
-                tracing::debug!(url, "image fetch timed out");
+                tracing::debug!(host = ?url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)), "image fetch timed out");
                 None
             }
         }

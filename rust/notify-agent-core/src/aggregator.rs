@@ -27,10 +27,10 @@ pub struct AggregatorConfig {
 impl Default for AggregatorConfig {
     fn default() -> Self {
         Self {
-            max_buckets: 100,                          // design §9
-            important_window: Duration::from_secs(2),  // design §6.3
-            normal_window: Duration::from_secs(10),    // design §6.3
-            drain_timeout: Duration::from_secs(5),     // spec §5.2/5.3
+            max_buckets: 100,                         // design §9
+            important_window: Duration::from_secs(2), // design §6.3
+            normal_window: Duration::from_secs(10),   // design §6.3
+            drain_timeout: Duration::from_secs(5),    // spec §5.2/5.3
         }
     }
 }
@@ -79,7 +79,9 @@ impl Aggregator {
         if n.priority == Priority::Critical {
             let sink = self.inner.sink.clone();
             let toast = toast::from_single(&n);
-            self.inner.renders.spawn(async move { sink.render(toast).await });
+            self.inner
+                .renders
+                .spawn(async move { sink.render(toast).await });
             return;
         }
 
@@ -91,7 +93,15 @@ impl Aggregator {
             return;
         }
         if buckets.len() >= self.inner.config.max_buckets {
-            self.inner.dropped_bucket_overflow.fetch_add(1, Ordering::Relaxed);
+            let dropped = self
+                .inner
+                .dropped_bucket_overflow
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+            tracing::warn!(
+                dropped_bucket_overflow = dropped,
+                "dropping event because the aggregation bucket limit is reached"
+            );
             return;
         }
 
@@ -105,7 +115,13 @@ impl Aggregator {
             tokio::time::sleep(window).await;
             Inner::flush(&inner, &timer_key);
         });
-        buckets.insert(key, Bucket { events: vec![n], timer });
+        buckets.insert(
+            key,
+            Bucket {
+                events: vec![n],
+                timer,
+            },
+        );
     }
 
     /// Flush every open bucket, then wait (bounded) for all in-flight renders.
@@ -162,10 +178,10 @@ impl Inner {
 mod tests {
     use super::*;
     use crate::model::Priority;
-    use crate::toast::{tests::event, ToastRequest};
+    use crate::toast::{ToastRequest, tests::event};
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
-    use tokio::time::{advance, Duration};
+    use tokio::time::{Duration, advance};
 
     #[derive(Default)]
     struct RecordingSink {
@@ -193,9 +209,14 @@ mod tests {
         }
     }
 
-    fn prioritized(seq: u64, id: &str, priority: Priority, agg_key: &str, replaceable: bool, message: &str)
-        -> crate::model::InboundNotification
-    {
+    fn prioritized(
+        seq: u64,
+        id: &str,
+        priority: Priority,
+        agg_key: &str,
+        replaceable: bool,
+        message: &str,
+    ) -> crate::model::InboundNotification {
         let mut n = event(seq, id, message);
         n.priority = priority;
         n.aggregation_key = agg_key.into();
@@ -214,7 +235,14 @@ mod tests {
     async fn critical_renders_immediately() {
         let sink = Arc::new(RecordingSink::default());
         let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
-        agg.add(prioritized(1, "e1", Priority::Critical, "agg.key", false, "m"));
+        agg.add(prioritized(
+            1,
+            "e1",
+            Priority::Critical,
+            "agg.key",
+            false,
+            "m",
+        ));
         settle().await;
         let rendered = sink.rendered.lock().unwrap();
         assert_eq!(rendered.len(), 1);
@@ -226,10 +254,20 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
         for (seq, id) in [(1, "e1"), (2, "e2"), (3, "e3")] {
-            agg.add(prioritized(seq, id, Priority::Normal, "agg.key", false, "m"));
+            agg.add(prioritized(
+                seq,
+                id,
+                Priority::Normal,
+                "agg.key",
+                false,
+                "m",
+            ));
         }
         settle().await;
-        assert!(sink.rendered.lock().unwrap().is_empty(), "window still open");
+        assert!(
+            sink.rendered.lock().unwrap().is_empty(),
+            "window still open"
+        );
         advance(Duration::from_secs(10)).await;
         settle().await;
         let rendered = sink.rendered.lock().unwrap();
@@ -289,7 +327,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn drops_events_beyond_max_buckets() {
         let sink = Arc::new(RecordingSink::default());
-        let config = AggregatorConfig { max_buckets: 2, ..Default::default() };
+        let config = AggregatorConfig {
+            max_buckets: 2,
+            ..Default::default()
+        };
         let agg = Aggregator::new(config, sink.clone());
         agg.add(prioritized(1, "a1", Priority::Normal, "a", false, "m"));
         agg.add(prioritized(2, "b1", Priority::Normal, "b", false, "m"));
@@ -305,7 +346,14 @@ mod tests {
     async fn shutdown_flushes_pending_buckets() {
         let sink = Arc::new(RecordingSink::default());
         let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
-        agg.add(prioritized(1, "e1", Priority::Normal, "agg.key", false, "m"));
+        agg.add(prioritized(
+            1,
+            "e1",
+            Priority::Normal,
+            "agg.key",
+            false,
+            "m",
+        ));
         agg.shutdown().await;
         assert_eq!(sink.rendered.lock().unwrap().len(), 1);
     }
@@ -313,9 +361,19 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn shutdown_waits_for_in_flight_renders() {
         // The C# agent loses this render (fire-and-forget); spec §5.2 fixes it.
-        let sink = Arc::new(SlowSink { delay: Duration::from_secs(1), rendered: Mutex::new(Vec::new()) });
+        let sink = Arc::new(SlowSink {
+            delay: Duration::from_secs(1),
+            rendered: Mutex::new(Vec::new()),
+        });
         let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
-        agg.add(prioritized(1, "e1", Priority::Critical, "agg.key", false, "m"));
+        agg.add(prioritized(
+            1,
+            "e1",
+            Priority::Critical,
+            "agg.key",
+            false,
+            "m",
+        ));
         settle().await;
         agg.shutdown().await; // paused clock auto-advances through the 1s render
         assert_eq!(sink.rendered.lock().unwrap().len(), 1);
@@ -331,7 +389,14 @@ mod tests {
             }
         }
         let agg = Aggregator::new(AggregatorConfig::default(), Arc::new(HungSink));
-        agg.add(prioritized(1, "e1", Priority::Critical, "agg.key", false, "m"));
+        agg.add(prioritized(
+            1,
+            "e1",
+            Priority::Critical,
+            "agg.key",
+            false,
+            "m",
+        ));
         settle().await;
         // Must complete (auto-advance covers the 5s drain timeout) instead of hanging.
         tokio::time::timeout(Duration::from_secs(60), agg.shutdown())
