@@ -40,9 +40,10 @@ boundary for displayed images and launched actions.
 `AgentHost.StartAsync`'s optional `INatsAuthProvider` (from `NotificationAgent.Core.Nats`)
 owns auth configuration: `CredsFileNatsAuthProvider` (Core, both hosts) wraps a `.creds`
 file; `ExternalAuthServiceNatsAuthProvider` (Windows only) calls an external HTTPS auth
-service, reusing the AAD token already acquired via `MsalIdentityProvider` for a second,
-separately configured scope. `NotificationAgent.Windows/NatsAuthSelection.cs` owns the
-presence-based selection between them at startup.
+service, using `MsalIdentityProvider` to silently acquire a separate token for a second,
+independently configured scope (reusing the same signed-in WAM account, not the identity
+token itself). `NotificationAgent.Windows/NatsAuthSelection.cs` owns the presence-based
+selection between them at startup.
 
 ## Windows runtime
 
