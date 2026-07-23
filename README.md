@@ -12,7 +12,7 @@ This repository is the Phase-1 POC of the agent only. The notification-service b
 
 ## High-level architecture
 
-All logic lives in a cross-platform .NET 8 core library behind two small interfaces (`IToastRenderer`, `IIdentityProvider`), so the whole pipeline is unit-testable on Linux. Two thin "heads" consume it: a console host for Linux development and the real Windows head.
+All logic lives in a cross-platform .NET 10 core library behind two small interfaces (`IToastRenderer`, `IIdentityProvider`), so the whole pipeline is unit-testable on Linux. Two thin "heads" consume it: a console host for Linux development and the real Windows head.
 
 ```
 NATS  notify.user.{userId}.desktop
@@ -42,11 +42,11 @@ IToastRenderer ──► ack: submitted_to_windows ──► NATS notify.ack.des
 
 | Project | Target | Role |
 |---|---|---|
-| `src/NotificationAgent.Core` | `net8.0` | The entire pipeline: parsing, dedup, aggregation, toast content, telemetry, hosting. No Windows dependencies. |
-| `src/NotificationAgent.ConsoleHost` | `net8.0` | Dev head for Linux: renders "toasts" to the console. |
-| `src/NotificationAgent.Windows` | `net8.0-windows10.0.19041.0` | Production head: Windows App SDK toasts (`AppNotificationBuilder`), MSAL/WAM identity, single-instance mutex. **Not in the solution file** — built separately on Windows. |
-| `tools/TestPublisher` | `net8.0` | Publishes test events and prints acks; stands in for the backend. |
-| `tests/NotificationAgent.Core.Tests` | `net8.0` | xUnit suite (uses `FakeTimeProvider` for all timing) plus a NATS integration test that skips itself when no server is on `localhost:4222`. |
+| `src/NotificationAgent.Core` | `net10.0` | The entire pipeline: parsing, dedup, aggregation, toast content, telemetry, hosting. No Windows dependencies. |
+| `src/NotificationAgent.ConsoleHost` | `net10.0` | Dev head for Linux: renders "toasts" to the console. |
+| `src/NotificationAgent.Windows` | `net10.0-windows10.0.19041.0` | Production head: Windows Community Toolkit toasts, MSAL/WAM identity, single-instance mutex. **Not in the solution file** — compiled separately; execution is Windows-only. |
+| `tools/TestPublisher` | `net10.0` | Publishes test events and prints acks; stands in for the backend. |
+| `tests/NotificationAgent.Core.Tests` | `net10.0` | xUnit suite (uses `FakeTimeProvider` for all timing) plus a NATS integration test that skips itself when no server is on `localhost:4222`. |
 
 ### Identity
 
@@ -57,16 +57,16 @@ The Windows account name is never used as identity. `IIdentityProvider` resolves
 
 ### Wire contracts
 
-Inbound events must match the design §7 JSON shape (`schemaVersion`, `eventId`, `notificationType`, `target.userId`, `content.{title,message,secondaryText}`, `action.{label,url}`, `classification.{priority,aggregationKey,deduplicationKey,replaceable}`, `timestamps.{...}`). Acks are camelCase JSON: `eventId`, `deviceId`, `agentReceivedAt`, `toastSubmittedAt` (omitted when null), `status`.
+Inbound events must match the design §7 JSON shape (`schemaVersion`, `eventId`, `notificationType`, `target.userId`, `content.{title,message,secondaryText,image.url}`, `action.{label,url}`, `classification.{priority,aggregationKey,deduplicationKey,replaceable}`, `timestamps.{...}`). `content.image.url` is optional and must be `https`; it renders as a circular avatar via `AppLogoOverride`. Acks are camelCase JSON: `eventId`, `deviceId`, `agentReceivedAt`, `toastSubmittedAt` (omitted when null), `status`.
 
 ## Setup
 
 ### Prerequisites
 
-- **.NET 8 SDK** — if not installed:
+- **.NET 10 SDK** — if not installed:
   ```bash
   curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-  bash /tmp/dotnet-install.sh --channel 8.0
+  bash /tmp/dotnet-install.sh --channel 10.0
   export PATH="$HOME/.dotnet:$PATH"   # add to your shell profile
   ```
 - **NATS server** — easiest via Docker:
@@ -79,9 +79,21 @@ Inbound events must match the design §7 JSON shape (`schemaVersion`, `eventId`,
 ```bash
 dotnet build
 dotnet test
+dotnet format NotificationAgent.sln --verify-no-changes --no-restore
 ```
 
+Builds enforce the repository's Roslyn and StyleCop analyzer rules as errors. The
+shared policy lives in `Directory.Build.props` and `.editorconfig`, so the command
+line and compatible IDEs use the same C# conventions.
+
 The solution (`NotificationAgent.sln`) contains Core, Core.Tests, ConsoleHost, and TestPublisher, so build/test stay green on Linux. The integration tests in `NatsIntegrationTests.cs` run only when a NATS server is reachable on `localhost:4222` and skip politely otherwise.
+
+The Windows head and its notification-content tests are intentionally excluded from the cross-platform solution. They can still be compiled and tested with the standalone .NET 10 SDK on Linux or WSL:
+
+```bash
+dotnet build src/NotificationAgent.Windows
+dotnet test tests/NotificationAgent.Windows.Tests
+```
 
 ### Configuration (environment variables)
 
@@ -90,10 +102,23 @@ The solution (`NotificationAgent.sln`) contains Core, Core.Tests, ConsoleHost, a
 | `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | all hosts + TestPublisher |
 | `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | agent hosts |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | agent hosts + TestPublisher |
+| `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | Both hosts: path to a NATS `.creds` file |
+| `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | Windows: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
+| `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | Windows: AAD scope requested when calling the auth service |
 | `NOTIFY_USER_ID` | *(required in dev)* | `EnvironmentIdentityProvider` |
 | `NOTIFY_DEVICE_ID` | `d-{machinename}` | `EnvironmentIdentityProvider` |
 | `NOTIFY_AAD_CLIENT_ID` | *(unset → env identity)* | Windows head: enables MSAL/WAM |
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | Windows head (with client ID) |
+
+`NOTIFY_NATS_URL` also accepts a `wss://` (NATS WebSocket) URL — the NATS client
+detects the transport from the URL scheme automatically, so no other configuration
+is needed to connect through a WebSocket-terminating load balancer or reverse proxy.
+
+NATS auth is selected presence-based, same style as identity: on Windows,
+`NOTIFY_NATS_AUTH_SERVICE_URL` (requires `NOTIFY_AAD_CLIENT_ID` and
+`NOTIFY_NATS_AUTH_SERVICE_SCOPE`) takes priority over `NOTIFY_NATS_CREDS_FILE`,
+which both hosts support; if neither is set, the connection is unauthenticated
+(today's default).
 
 ## How to use
 
@@ -110,7 +135,7 @@ dotnet run --project src/NotificationAgent.ConsoleHost
 Terminal 2 — publish test events and watch acks:
 
 ```bash
-# Usage: dotnet run --project tools/TestPublisher -- <userId> [title] [message] [priority] [count]
+# Usage: dotnet run --project tools/TestPublisher -- <userId> [title] [message] [priority] [count] [imageUrl]
 dotnet run --project tools/TestPublisher -- u_demo "Invoice ready" "INV-8492 is ready." normal 3
 ```
 
@@ -118,7 +143,7 @@ The agent prints an `observed_by_agent` ack per event immediately, batches the t
 
 ### Windows head
 
-`NotificationAgent.Windows` is deliberately excluded from the solution; build and run it on a Windows 11 machine:
+`NotificationAgent.Windows` is deliberately excluded from the solution. It can be compiled on Linux, WSL, or Windows with the standalone .NET 10 SDK, but it can only run and display notifications on Windows 10/11:
 
 ```powershell
 dotnet build src/NotificationAgent.Windows
@@ -131,7 +156,33 @@ $env:NOTIFY_USER_ID = "u_demo"
 dotnet run --project src/NotificationAgent.Windows
 ```
 
-It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, registers with `AppNotificationManager`, and opens the toast's action URL in the default browser (http/https only) when clicked.
+It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `Microsoft.Toolkit.Uwp.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It has no additional notification runtime dependency.
+
+`Microsoft.Toolkit.Uwp.Notifications` 7.1.3 is retained as an explicit legacy compatibility dependency because it supports unpackaged desktop notifications without introducing the Windows App SDK runtime. Revisit this choice when a maintained alternative provides the same standalone deployment model.
+
+### Verify the avatar image renders correctly (Windows)
+
+With the Windows head running (above) and pointed at a NATS server reachable from wherever you run `TestPublisher` (the same machine, or any box that can reach `NOTIFY_NATS_URL`), publish one event with an image URL to reproduce a Teams-presence-style toast (circular avatar + two-line text):
+
+```bash
+dotnet run --project tools/TestPublisher -- u_demo "Tony Redmond" "is now available" critical 1 "https://i.pravatar.cc/300"
+```
+
+(`critical` renders immediately instead of waiting for a batch window; `https://i.pravatar.cc/300` is a public placeholder-avatar service — swap in any reachable https image URL.)
+
+**Expected toast, on the Windows machine:**
+- A circular avatar image at the left, cropped from the URL — confirms `AddAppLogoOverride(uri, ToastGenericAppLogoCrop.Circle)`.
+- "Tony Redmond" as the first text line, "is now available" as the second.
+- "TestPublisher" as small attribution text (from `TestPublisher`'s hardcoded `secondaryText`).
+- A "View" button (from `TestPublisher`'s hardcoded `action`); clicking it opens `https://app.example.com/invoices/8492` in the default browser.
+
+**Negative case** — confirm a bad image URL degrades to text-only instead of failing the toast:
+
+```bash
+dotnet run --project tools/TestPublisher -- u_demo "Tony Redmond" "is now available" critical 1 "http://not-https.example.com/x.jpg"
+```
+
+On the **Windows head**, expect the same toast *without* an avatar (the `http://` URL fails `HttpsUrlPolicy` and is silently dropped) — title, message, attribution, and button still render normally. This case can only be verified there: the **console dev host** prints whatever `ImageUrl` it's given without validating it first (`ConsoleToastRenderer` isn't `HttpsUrlPolicy`-gated — the same is already true of its `[ActionLabel] -> ActionUrl` line, so this isn't a new gap), so it will show `[image] http://not-https.example.com/x.jpg` regardless of scheme.
 
 ## Development
 

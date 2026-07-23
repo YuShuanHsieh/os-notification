@@ -14,9 +14,14 @@ public class EventPipelineTests
     private sealed class RecordingTelemetry : ITelemetryPublisher
     {
         public List<AckPayload> Acks { get; } = new();
+
         public ValueTask PublishAckAsync(AckPayload ack, CancellationToken ct = default)
         {
-            lock (Acks) Acks.Add(ack);
+            lock (Acks)
+            {
+                Acks.Add(ack);
+            }
+
             return ValueTask.CompletedTask;
         }
     }
@@ -24,25 +29,35 @@ public class EventPipelineTests
     private sealed class RecordingRenderer : IToastRenderer
     {
         public List<ToastRequest> Shown { get; } = new();
+
         public DateTimeOffset SubmitAt { get; set; } = DateTimeOffset.Parse("2026-07-15T08:30:00.205Z");
+
         public ValueTask<DateTimeOffset> ShowAsync(ToastRequest toast, CancellationToken ct = default)
         {
-            lock (Shown) Shown.Add(toast);
+            lock (Shown)
+            {
+                Shown.Add(toast);
+            }
+
             return ValueTask.FromResult(SubmitAt);
         }
     }
 
     private static readonly DateTimeOffset ReceivedAt = DateTimeOffset.Parse("2026-07-15T08:30:00.190Z");
 
-    private static ReceivedEvent CriticalEvent(string id) => new(Encoding.UTF8.GetBytes(
+    private static ReceivedEvent CriticalEvent(string id) => new(
+        Encoding.UTF8.GetBytes(
         $"{{\"eventId\":\"{id}\",\"target\":{{\"userId\":\"u1\"}}," +
         $"\"content\":{{\"title\":\"T\",\"message\":\"M\"}}," +
-        $"\"classification\":{{\"priority\":\"critical\",\"deduplicationKey\":\"{id}\"}}}}"
-        ), ReceivedAt);
+        $"\"classification\":{{\"priority\":\"critical\",\"deduplicationKey\":\"{id}\"}}}}"), ReceivedAt);
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
-        for (var i = 0; i < 500 && !condition(); i++) await Task.Delay(10);
+        for (var i = 0; i < 500 && !condition(); i++)
+        {
+            await Task.Delay(10);
+        }
+
         Assert.True(condition(), "condition not reached within 5s");
     }
 
@@ -55,12 +70,18 @@ public class EventPipelineTests
             new PipelineOptions(), new AggregatorOptions(),
             new DeduplicationCache(100, TimeSpan.FromMinutes(10)),
             renderer, telemetry, deviceId: "d-456", new FakeTimeProvider());
-        await using var _a = aggregator;
+        await using var a1 = aggregator;
         await using var _p = pipeline;
         pipeline.Start();
 
         Assert.True(pipeline.TryEnqueue(CriticalEvent("evt-1")));
-        await WaitUntilAsync(() => { lock (telemetry.Acks) return telemetry.Acks.Count == 2; });
+        await WaitUntilAsync(() =>
+        {
+            lock (telemetry.Acks)
+            {
+                return telemetry.Acks.Count == 2;
+            }
+        });
 
         Assert.Single(renderer.Shown);
         var observed = telemetry.Acks.Single(a => a.Status == AckStatuses.ObservedByAgent);
@@ -89,7 +110,13 @@ public class EventPipelineTests
         pipeline.TryEnqueue(CriticalEvent("evt-dup"));
         pipeline.TryEnqueue(CriticalEvent("evt-dup"));
         pipeline.TryEnqueue(CriticalEvent("evt-dup"));
-        await WaitUntilAsync(() => { lock (telemetry.Acks) return telemetry.Acks.Count >= 2; });
+        await WaitUntilAsync(() =>
+        {
+            lock (telemetry.Acks)
+            {
+                return telemetry.Acks.Count >= 2;
+            }
+        });
         await Task.Delay(100); // grace period: no further acks should arrive
 
         Assert.Single(renderer.Shown);
@@ -105,12 +132,18 @@ public class EventPipelineTests
             new PipelineOptions(), new AggregatorOptions(),
             new DeduplicationCache(100, TimeSpan.FromMinutes(10)),
             renderer, telemetry, "d-1", new FakeTimeProvider());
-        await using var _a = aggregator;
+        await using var a1 = aggregator;
         pipeline.Start();
 
         pipeline.TryEnqueue(new ReceivedEvent(Encoding.UTF8.GetBytes("garbage"), ReceivedAt));
         pipeline.TryEnqueue(CriticalEvent("evt-ok"));   // proves the worker survived
-        await WaitUntilAsync(() => { lock (telemetry.Acks) return telemetry.Acks.Count == 2; });
+        await WaitUntilAsync(() =>
+        {
+            lock (telemetry.Acks)
+            {
+                return telemetry.Acks.Count == 2;
+            }
+        });
 
         await pipeline.DisposeAsync();
         Assert.Single(renderer.Shown);
@@ -125,8 +158,8 @@ public class EventPipelineTests
             new PipelineOptions { QueueCapacity = 2 }, new AggregatorOptions(),
             new DeduplicationCache(100, TimeSpan.FromMinutes(10)),
             new RecordingRenderer(), telemetry, "d-1", new FakeTimeProvider());
-        // Never started → nothing drains the channel.
 
+        // Never started → nothing drains the channel.
         Assert.True(pipeline.TryEnqueue(CriticalEvent("e1")));
         Assert.True(pipeline.TryEnqueue(CriticalEvent("e2")));
         Assert.False(pipeline.TryEnqueue(CriticalEvent("e3")));

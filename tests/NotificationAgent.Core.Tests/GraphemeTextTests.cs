@@ -9,7 +9,7 @@ public class GraphemeTextTests
     public void Returns_short_strings_unchanged()
     {
         Assert.Equal("hello", GraphemeText.Truncate("hello", 5));
-        Assert.Equal("", GraphemeText.Truncate("", 5));
+        Assert.Equal(string.Empty, GraphemeText.Truncate(string.Empty, 5));
     }
 
     [Fact]

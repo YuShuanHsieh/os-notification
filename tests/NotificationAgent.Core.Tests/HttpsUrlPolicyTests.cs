@@ -2,7 +2,7 @@ using NotificationAgent.Core.Rendering;
 
 namespace NotificationAgent.Core.Tests;
 
-public sealed class ActionUrlPolicyTests
+public sealed class HttpsUrlPolicyTests
 {
     [Theory]
     [InlineData("https://example.com")]
@@ -13,7 +13,7 @@ public sealed class ActionUrlPolicyTests
     [InlineData("https://[::1]/path")]
     public void TryCreate_AcceptsValidHttpsUrl(string value)
     {
-        var result = ActionUrlPolicy.TryCreate(value, out var uri);
+        var result = HttpsUrlPolicy.TryCreate(value, out var uri);
 
         Assert.True(result);
         Assert.Equal(Uri.UriSchemeHttps, uri.Scheme);
@@ -30,15 +30,15 @@ public sealed class ActionUrlPolicyTests
     [InlineData(@"https:\\example.com\path")]
     public void TryCreate_RejectsUnsafeOrMalformedUrl(string value)
     {
-        Assert.False(ActionUrlPolicy.TryCreate(value, out _));
+        Assert.False(HttpsUrlPolicy.TryCreate(value, out _));
     }
 
     [Fact]
     public void TryCreate_RejectsOversizedUrl()
     {
         var value = "https://example.com/" +
-                    new string('a', ActionUrlPolicy.MaxUrlLength);
+                    new string('a', HttpsUrlPolicy.MaxUrlLength);
 
-        Assert.False(ActionUrlPolicy.TryCreate(value, out _));
+        Assert.False(HttpsUrlPolicy.TryCreate(value, out _));
     }
 }

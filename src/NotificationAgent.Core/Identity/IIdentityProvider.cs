@@ -17,10 +17,16 @@ public sealed class EnvironmentIdentityProvider : IIdentityProvider
     {
         var userId = Environment.GetEnvironmentVariable("NOTIFY_USER_ID");
         if (string.IsNullOrWhiteSpace(userId))
+        {
             throw new InvalidOperationException("NOTIFY_USER_ID is not set");
+        }
+
         var deviceId = Environment.GetEnvironmentVariable("NOTIFY_DEVICE_ID");
         if (string.IsNullOrWhiteSpace(deviceId))
+        {
             deviceId = $"d-{Environment.MachineName.ToLowerInvariant()}";
+        }
+
         return ValueTask.FromResult(new AgentIdentity(userId, deviceId));
     }
 }

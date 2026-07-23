@@ -46,7 +46,11 @@ public class DeduplicationCacheTests
         var wins = 0;
         Parallel.For(0, 1000, i =>
         {
-            if (cache.TryAdd("same-key")) Interlocked.Increment(ref wins);
+            if (cache.TryAdd("same-key"))
+            {
+                Interlocked.Increment(ref wins);
+            }
+
             cache.TryAdd($"key-{i}");
         });
         Assert.Equal(1, wins); // exactly one thread may win a given key
