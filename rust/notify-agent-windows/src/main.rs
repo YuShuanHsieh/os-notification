@@ -154,12 +154,12 @@ mod win {
             let auth_provider: Option<Arc<dyn NatsAuthProvider>> = match auth_service_url {
                 Some(url) => {
                     tracing::debug!(url = %url, "nats auth: mode = external-auth-service");
-                    let token_provider = Arc::new(AadTokenProvider {
-                        client_id: client_id.expect("validated above: auth service requires an AAD client id"),
+                    let token_provider = Arc::new(AadTokenProvider::new(
+                        client_id.expect("validated above: auth service requires an AAD client id"),
                         tenant,
-                        scope: auth_service_scope.expect("validated above: auth service requires a scope"),
+                        auth_service_scope.expect("validated above: auth service requires a scope"),
                         refresh_token,
-                    });
+                    ));
                     let provider = ExternalAuthServiceAuth::new(url, token_provider)?;
                     Some(Arc::new(provider) as Arc<dyn NatsAuthProvider>)
                 }

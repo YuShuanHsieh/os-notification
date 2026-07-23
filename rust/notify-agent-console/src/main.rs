@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use tracing;
 use notify_agent_core::host::{AgentConfig, AgentHost};
 use notify_agent_core::identity::{default_device_id, DeviceCodeIdentity, EnvIdentity, IdentityProvider};
 use notify_agent_core::nats_auth::{CredsFileAuth, NatsAuthProvider};

@@ -190,6 +190,34 @@ pub struct AadTokenProvider {
     pub tenant: String,
     pub scope: String,
     pub refresh_token: Arc<tokio::sync::Mutex<Option<String>>>,
+    /// Pre-built once (not per-call, to avoid client churn) with a bounded timeout, so a hung
+    /// AAD token endpoint can't stall a connect/reconnect attempt indefinitely.
+    http: reqwest::Client,
+    /// Base authority URL for the AAD `/token` endpoint. Overridable (only reachable from
+    /// within this module, e.g. by tests) to point at a local HTTP stub instead of the real
+    /// `https://login.microsoftonline.com` — see the tests below.
+    authority_base: String,
+}
+
+impl AadTokenProvider {
+    pub fn new(
+        client_id: String,
+        tenant: String,
+        scope: String,
+        refresh_token: Arc<tokio::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        Self {
+            client_id,
+            tenant,
+            scope,
+            refresh_token,
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("reqwest client builder with only a timeout set should not fail"),
+            authority_base: "https://login.microsoftonline.com".to_string(),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -209,9 +237,9 @@ impl AccessTokenProvider for AadTokenProvider {
             .clone()
             .context("no AAD refresh token available; device-code sign-in must complete before the NATS auth callback runs")?;
 
-        let http = reqwest::Client::new();
-        let base = format!("https://login.microsoftonline.com/{}/oauth2/v2.0", self.tenant);
-        let response: RefreshTokenResponse = http
+        let base = format!("{}/{}/oauth2/v2.0", self.authority_base, self.tenant);
+        let response: RefreshTokenResponse = self
+            .http
             .post(format!("{base}/token"))
             .form(&[
                 ("grant_type", "refresh_token"),
@@ -238,6 +266,25 @@ impl AccessTokenProvider for AadTokenProvider {
 mod tests {
     use super::*;
     use base64::Engine;
+    use crate::nats_auth::ExternalAuthServiceAuth;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Minimal one-shot HTTP/1.1 stub, mirroring `nats_auth::tests::stub_http_once`: accepts one
+    /// connection, writes the given response with `Connection: close`, and hands back the raw
+    /// request bytes it received for assertions.
+    async fn stub_http_once(response_status_and_body: &'static str) -> (String, tokio::task::JoinHandle<Vec<u8>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = socket.read(&mut buf).await.unwrap();
+            socket.write_all(response_status_and_body.as_bytes()).await.unwrap();
+            socket.shutdown().await.ok();
+            buf[..n].to_vec()
+        });
+        (format!("http://{addr}"), handle)
+    }
 
     fn fake_jwt(claims: &serde_json::Value) -> String {
         let b64 = |v: &serde_json::Value| {
@@ -308,13 +355,79 @@ mod tests {
 
     #[tokio::test]
     async fn aad_token_provider_errors_without_a_refresh_token_yet() {
-        let provider = AadTokenProvider {
-            client_id: "c".into(),
-            tenant: "organizations".into(),
-            scope: "api://x/Nats.Connect".into(),
-            refresh_token: Arc::new(tokio::sync::Mutex::new(None)),
-        };
+        let provider = AadTokenProvider::new(
+            "c".into(),
+            "organizations".into(),
+            "api://x/Nats.Connect".into(),
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
 
         assert!(provider.access_token().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn aad_token_provider_success_path_rotates_refresh_token() {
+        let (stub_base, handle) = stub_http_once(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n\
+             {\"access_token\":\"at-1\",\"refresh_token\":\"rt-2\"}",
+        )
+        .await;
+        let refresh_token = Arc::new(tokio::sync::Mutex::new(Some("rt-1".to_string())));
+        let mut provider = AadTokenProvider::new(
+            "client-1".into(),
+            "test-tenant".into(),
+            "api://x/Nats.Connect".into(),
+            refresh_token.clone(),
+        );
+        provider.authority_base = stub_base;
+
+        let token = provider.access_token().await.unwrap();
+
+        assert_eq!(token, "at-1");
+        assert_eq!(refresh_token.lock().await.as_deref(), Some("rt-2"), "refresh token must rotate to the new value");
+
+        let request = String::from_utf8(handle.await.unwrap()).unwrap().to_lowercase();
+        assert!(request.contains("grant_type=refresh_token"));
+        assert!(request.contains("refresh_token=rt-1"));
+        assert!(request.contains("/test-tenant/oauth2/v2.0/token"));
+    }
+
+    /// Integration-style: a real AadTokenProvider feeds a real ExternalAuthServiceAuth, proving
+    /// the full chain (AAD token fetch -> NATS auth-service JWT fetch -> nonce signing) works
+    /// together against two independent HTTP stubs, not just each piece in isolation.
+    #[tokio::test]
+    async fn aad_token_provider_feeds_external_auth_service_end_to_end() {
+        let (aad_base, aad_handle) = stub_http_once(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n\
+             {\"access_token\":\"aad-at-1\"}",
+        )
+        .await;
+        let (auth_service_url, auth_handle) = stub_http_once(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"jwt\":\"jwt-xyz\"}",
+        )
+        .await;
+
+        let refresh_token = Arc::new(tokio::sync::Mutex::new(Some("rt-1".to_string())));
+        let mut aad_provider = AadTokenProvider::new(
+            "client-1".into(),
+            "test-tenant".into(),
+            "api://x/Nats.Connect".into(),
+            refresh_token,
+        );
+        aad_provider.authority_base = aad_base;
+
+        let nats_auth = ExternalAuthServiceAuth::new(auth_service_url, Arc::new(aad_provider)).unwrap();
+
+        let auth = nats_auth.fetch_auth(b"integration-nonce").await.unwrap();
+
+        assert_eq!(auth.jwt.as_deref(), Some("jwt-xyz"));
+        assert!(auth.signature.is_some());
+
+        let aad_request = String::from_utf8(aad_handle.await.unwrap()).unwrap().to_lowercase();
+        assert!(aad_request.contains("grant_type=refresh_token"));
+
+        let auth_request = String::from_utf8(auth_handle.await.unwrap()).unwrap().to_lowercase();
+        assert!(auth_request.contains("authorization: bearer aad-at-1"));
+        assert!(auth_request.contains(&nats_auth.public_key().to_lowercase()));
     }
 }
