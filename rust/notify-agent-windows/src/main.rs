@@ -1,8 +1,13 @@
+#![windows_subsystem = "windows"]
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("notify-agent-windows only runs on Windows. Build with --target x86_64-pc-windows-gnu.");
     std::process::exit(2);
 }
+
+#[cfg(windows)]
+mod tray;
 
 #[cfg(windows)]
 mod win {
@@ -89,6 +94,10 @@ mod win {
         Ok(id)
     }
 
+    /// Tray icon + Win32 message loop run on the calling (main) thread; the agent's async
+    /// lifetime runs on a dedicated thread with its own tokio runtime, since a blocking
+    /// `GetMessageW` pump and a blocking `block_on` can't share one thread (design: system
+    /// tray icon, ported from the C# TrayApplicationContext).
     pub fn run() -> anyhow::Result<()> {
         // One instance per interactive session: "Local\" mutexes are
         // session-scoped. Deliberately distinct from the C# mutex name so the
@@ -101,85 +110,120 @@ mod win {
         }
         register_aumid()?;
 
-        tokio::runtime::Runtime::new()?.block_on(async {
-            tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-                .init();
-            let config = AgentConfig::from_env();
-            let renderer: Arc<dyn ToastRenderer> = Arc::new(WindowsToastRenderer::new()?);
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
 
-            let client_id = std::env::var("NOTIFY_AAD_CLIENT_ID").ok().filter(|s| !s.trim().is_empty());
-            let tenant = std::env::var("NOTIFY_AAD_TENANT_ID").unwrap_or_else(|_| "organizations".into());
-            let auth_service_url = std::env::var("NOTIFY_NATS_AUTH_SERVICE_URL").ok().filter(|s| !s.trim().is_empty());
-            let auth_service_scope = std::env::var("NOTIFY_NATS_AUTH_SERVICE_SCOPE").ok().filter(|s| !s.trim().is_empty());
-            let creds_file = std::env::var("NOTIFY_NATS_CREDS_FILE").ok().filter(|s| !s.trim().is_empty());
+        let (close_tx, close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let tray = super::tray::create(close_tx, done_rx)?;
 
-            validate_auth_service_config(&NatsAuthConfig {
-                auth_service_url: auth_service_url.clone(),
-                auth_service_scope: auth_service_scope.clone(),
-                has_aad_identity: client_id.is_some(),
-            })?;
+        std::thread::spawn(move || {
+            let result = tokio::runtime::Runtime::new()
+                .expect("failed to build tokio runtime")
+                .block_on(run_agent(close_rx, tray));
+            if let Err(e) = result {
+                tracing::error!(error = %e, "agent failed to start or run");
+            }
+            let _ = done_tx.send(());
+        });
 
-            tracing::debug!(
-                aad_identity = client_id.is_some(),
-                auth_service = auth_service_url.is_some(),
-                creds_file = creds_file.is_some(),
-                "nats auth: startup config resolved"
-            );
+        super::tray::run_message_loop();
+        Ok(())
+    }
 
-            let refresh_token: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
-            let extra_scopes = match &auth_service_scope {
-                Some(scope) if auth_service_url.is_some() => vec![scope.clone()],
-                _ => Vec::new(),
-            };
+    /// Starts the agent, then waits for either Ctrl+C or the tray's Close click before shutting
+    /// down. On startup failure, flags the tray tooltip and returns — the tray/Close item stay
+    /// usable with no `AgentHost` to dispose (matches the C# design's failure path).
+    async fn run_agent(mut close_rx: tokio::sync::mpsc::UnboundedReceiver<()>, tray: super::tray::TrayHandle) -> anyhow::Result<()> {
+        let host = match start_host().await {
+            Ok(host) => host,
+            Err(e) => {
+                tray.set_start_failed();
+                return Err(e);
+            }
+        };
+        tracing::info!(subject = host.subject(), "agent running");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = close_rx.recv() => {}
+        }
+        host.shutdown().await
+    }
 
-            let identity: Arc<dyn IdentityProvider> = match &client_id {
-                Some(client_id) => {
-                    tracing::debug!(client_id = %client_id, "identity: mode = device-code (AAD)");
-                    Arc::new(DeviceCodeIdentity {
-                        client_id: client_id.clone(),
-                        tenant: tenant.clone(),
-                        device_id: device_id()?,
-                        renderer: renderer.clone(),
-                        extra_scopes,
-                        refresh_token_sink: Some(refresh_token.clone()),
-                    })
+    async fn start_host() -> anyhow::Result<AgentHost> {
+        let config = AgentConfig::from_env();
+        let renderer: Arc<dyn ToastRenderer> = Arc::new(WindowsToastRenderer::new()?);
+
+        let client_id = std::env::var("NOTIFY_AAD_CLIENT_ID").ok().filter(|s| !s.trim().is_empty());
+        let tenant = std::env::var("NOTIFY_AAD_TENANT_ID").unwrap_or_else(|_| "organizations".into());
+        let auth_service_url = std::env::var("NOTIFY_NATS_AUTH_SERVICE_URL").ok().filter(|s| !s.trim().is_empty());
+        let auth_service_scope = std::env::var("NOTIFY_NATS_AUTH_SERVICE_SCOPE").ok().filter(|s| !s.trim().is_empty());
+        let creds_file = std::env::var("NOTIFY_NATS_CREDS_FILE").ok().filter(|s| !s.trim().is_empty());
+
+        validate_auth_service_config(&NatsAuthConfig {
+            auth_service_url: auth_service_url.clone(),
+            auth_service_scope: auth_service_scope.clone(),
+            has_aad_identity: client_id.is_some(),
+        })?;
+
+        tracing::debug!(
+            aad_identity = client_id.is_some(),
+            auth_service = auth_service_url.is_some(),
+            creds_file = creds_file.is_some(),
+            "nats auth: startup config resolved"
+        );
+
+        let refresh_token: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
+        let extra_scopes = match &auth_service_scope {
+            Some(scope) if auth_service_url.is_some() => vec![scope.clone()],
+            _ => Vec::new(),
+        };
+
+        let identity: Arc<dyn IdentityProvider> = match &client_id {
+            Some(client_id) => {
+                tracing::debug!(client_id = %client_id, "identity: mode = device-code (AAD)");
+                Arc::new(DeviceCodeIdentity {
+                    client_id: client_id.clone(),
+                    tenant: tenant.clone(),
+                    device_id: device_id()?,
+                    renderer: renderer.clone(),
+                    extra_scopes,
+                    refresh_token_sink: Some(refresh_token.clone()),
+                })
+            }
+            None => {
+                tracing::debug!("identity: mode = env (NOTIFY_USER_ID)");
+                Arc::new(EnvIdentity)
+            }
+        };
+
+        let auth_provider: Option<Arc<dyn NatsAuthProvider>> = match auth_service_url {
+            Some(url) => {
+                tracing::debug!(url = %url, "nats auth: mode = external-auth-service");
+                let token_provider = Arc::new(AadTokenProvider::new(
+                    client_id.expect("validated above: auth service requires an AAD client id"),
+                    tenant,
+                    auth_service_scope.expect("validated above: auth service requires a scope"),
+                    refresh_token,
+                ));
+                let provider = ExternalAuthServiceAuth::new(url, token_provider)?;
+                Some(Arc::new(provider) as Arc<dyn NatsAuthProvider>)
+            }
+            None => match creds_file {
+                Some(path) => {
+                    tracing::debug!(path = %path, "nats auth: mode = creds-file");
+                    Some(Arc::new(CredsFileAuth { path }) as Arc<dyn NatsAuthProvider>)
                 }
                 None => {
-                    tracing::debug!("identity: mode = env (NOTIFY_USER_ID)");
-                    Arc::new(EnvIdentity)
+                    tracing::debug!("nats auth: mode = none (unauthenticated)");
+                    None
                 }
-            };
+            },
+        };
 
-            let auth_provider: Option<Arc<dyn NatsAuthProvider>> = match auth_service_url {
-                Some(url) => {
-                    tracing::debug!(url = %url, "nats auth: mode = external-auth-service");
-                    let token_provider = Arc::new(AadTokenProvider::new(
-                        client_id.expect("validated above: auth service requires an AAD client id"),
-                        tenant,
-                        auth_service_scope.expect("validated above: auth service requires a scope"),
-                        refresh_token,
-                    ));
-                    let provider = ExternalAuthServiceAuth::new(url, token_provider)?;
-                    Some(Arc::new(provider) as Arc<dyn NatsAuthProvider>)
-                }
-                None => match creds_file {
-                    Some(path) => {
-                        tracing::debug!(path = %path, "nats auth: mode = creds-file");
-                        Some(Arc::new(CredsFileAuth { path }) as Arc<dyn NatsAuthProvider>)
-                    }
-                    None => {
-                        tracing::debug!("nats auth: mode = none (unauthenticated)");
-                        None
-                    }
-                },
-            };
-
-            let host = AgentHost::start(config, identity, renderer, auth_provider).await?;
-            tracing::info!(subject = host.subject(), "agent running");
-            tokio::signal::ctrl_c().await?;
-            host.shutdown().await
-        })
+        let host = AgentHost::start(config, identity, renderer, auth_provider).await?;
+        Ok(host)
     }
 }
 
