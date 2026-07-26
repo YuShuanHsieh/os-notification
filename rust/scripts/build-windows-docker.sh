@@ -12,7 +12,7 @@ IMAGE_TAG="notify-agent-windows-builder"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-docker build -t "$IMAGE_TAG" -f "$RUST_DIR/docker/windows-cross.Dockerfile" "$RUST_DIR"
+docker build -t "$IMAGE_TAG" -f "$RUST_DIR/docker/windows-cross.Dockerfile" "$RUST_DIR/docker"
 
 docker run --rm \
   -v "$RUST_DIR:/workspace" \
@@ -20,11 +20,11 @@ docker run --rm \
   -v notify-agent-rustup:/usr/local/rustup \
   -w /workspace \
   "$IMAGE_TAG" \
-  bash -c "
+  bash -c '
     set -euo pipefail
-    rustup target add '$TARGET'
-    cargo build --release --target '$TARGET' -p notify-agent-windows
-    chown -R $(id -u):$(id -g) target
-  "
+    rustup target add "$1"
+    cargo build --release --target "$1" -p notify-agent-windows
+    chown -R "$2":"$3" target
+  ' _ "$TARGET" "$(id -u)" "$(id -g)"
 
 echo "Built: $RUST_DIR/target/$TARGET/release/notify-agent-windows.exe"

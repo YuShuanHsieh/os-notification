@@ -124,6 +124,7 @@ mod win {
                 .block_on(run_agent(close_rx, tray));
             if let Err(e) = result {
                 tracing::error!(error = %e, "agent failed to start or run");
+                tray.set_start_failed();
             }
             let _ = done_tx.send(());
         });

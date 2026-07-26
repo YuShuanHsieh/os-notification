@@ -60,7 +60,6 @@ impl TrayHandle {
 }
 
 struct TrayState {
-    hwnd: HWND,
     menu: HMENU,
     close_tx: tokio::sync::mpsc::UnboundedSender<()>,
     done_rx: std::cell::RefCell<Option<mpsc::Receiver<()>>>,
@@ -111,7 +110,6 @@ pub fn create(
         AppendMenuW(menu, MF_STRING, ID_MENU_CLOSE, &HSTRING::from("Close"))?;
 
         let state = Box::into_raw(Box::new(TrayState {
-            hwnd: HWND::default(),
             menu,
             close_tx,
             done_rx: std::cell::RefCell::new(Some(done_rx)),
@@ -131,7 +129,6 @@ pub fn create(
             hinstance,
             Some(state as *const std::ffi::c_void),
         )?;
-        (*state).hwnd = hwnd;
 
         let mut data = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -150,12 +147,19 @@ pub fn create(
 }
 
 /// Blocks the calling thread pumping Win32 messages for the app's whole lifetime. Only
-/// returns if the message loop is torn down (WM_QUIT) — in practice the process exits via
-/// `std::process::exit` from the Close watcher thread before that ever happens.
+/// returns if the message loop is torn down (WM_QUIT) or GetMessageW errors — in practice
+/// the process exits via `std::process::exit` from the Close watcher thread before that
+/// ever happens.
 pub fn run_message_loop() {
     let mut msg = MSG::default();
     unsafe {
-        while GetMessageW(&mut msg, None, 0, 0).into() {
+        loop {
+            // GetMessageW returns 0 on WM_QUIT, -1 on error, nonzero otherwise — a plain
+            // bool conversion would treat -1 as "message received" and dispatch `msg`
+            // uninitialized/stale.
+            if GetMessageW(&mut msg, None, 0, 0).0 <= 0 {
+                break;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -184,24 +188,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_TRAYICON if matches!(lparam.0 as u32, WM_RBUTTONUP | WM_LBUTTONUP) => {
             let mut pt = Default::default();
             let _ = GetCursorPos(&mut pt);
-            let _ = SetForegroundWindow(state.hwnd); // so the menu dismisses on click-away
+            let _ = SetForegroundWindow(hwnd); // so the menu dismisses on click-away
             let _ = TrackPopupMenu(
                 state.menu,
                 TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
                 pt.x,
                 pt.y,
                 0,
-                state.hwnd,
+                hwnd,
                 None,
             );
             // Required after TrackPopupMenu per MSDN, else the menu can fail to close.
-            let _ = PostMessageW(state.hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
             LRESULT(0)
         }
-        WM_COMMAND if wparam.0 == ID_MENU_CLOSE => {
+        // WM_COMMAND packs the notification code in HIWORD(wParam); it's 0 for menu clicks,
+        // but mask it explicitly rather than relying on that always being the case.
+        WM_COMMAND if (wparam.0 & 0xFFFF) == ID_MENU_CLOSE => {
             let data = NOTIFYICONDATAW {
                 cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: state.hwnd,
+                hWnd: hwnd,
                 uID: TRAY_UID,
                 ..Default::default()
             };
