@@ -97,7 +97,7 @@ The linked binary lands at `target/x86_64-pc-windows-gnu/release/notify-agent-wi
 - Click Close — the icon disappears immediately and the process exits (check Task Manager) within ~5 seconds.
 - Point `NOTIFY_NATS_URL` at an unreachable host, relaunch — the tray icon still appears, the tooltip flags the failure (hover to see "... (agent failed to start)"), and Close still terminates the process immediately (no `AgentHost` to wait on).
 
-### Via Docker (no host mingw-w64 install needed)
+**Changing the tray icon:** replace `notify-agent-windows/assets/app.ico` and rebuild — no other file needs to change. **Use classic BMP/DIB-encoded frames, not PNG-compressed ones**, when regenerating the `.ico` (e.g. Pillow: `img.save(..., format="ICO", sizes=[...], bitmap_format="bmp")` — its default is PNG). GNU `windres` (the resource compiler `mingw-w64` provides, used by `build.rs` via the `embed-resource` crate) has a long-documented history of mishandling PNG-format icon directory entries: the resource bytes can look completely fine under inspection (right sizes, right resource IDs, `RT_ICON`/`RT_GROUP_ICON` all present) while the icon still fails to render at runtime. This bit us once already — an all-PNG `.ico` produced a binary that inspected as correct but showed no tray icon on real Windows.
 
 ```bash
 ./scripts/build-windows-docker.sh

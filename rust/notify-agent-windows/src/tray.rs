@@ -17,11 +17,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
-    GetMessageW, GetWindowLongPtrW, LoadCursorW, LoadIconW, PostMessageW, RegisterClassExW,
-    SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, CREATESTRUCTW,
-    GWLP_USERDATA, HMENU, IDC_ARROW, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_LBUTTONUP, WM_NCCREATE,
-    WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
+    GetMessageW, GetSystemMetrics, GetWindowLongPtrW, LoadCursorW, LoadImageW, PostMessageW,
+    RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu, TranslateMessage,
+    CREATESTRUCTW, GWLP_USERDATA, HICON, HMENU, IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR,
+    MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN,
+    TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_LBUTTONUP, WM_NCCREATE, WM_NULL,
+    WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
 const CLASS_NAME: &str = "NotifyAgentRustTrayWindow";
@@ -71,6 +72,19 @@ fn set_tip(data: &mut NOTIFYICONDATAW, text: &str) {
     let wide: Vec<u16> = text.encode_utf16().take(data.szTip.len() - 1).collect();
     data.szTip[..wide.len()].copy_from_slice(&wide);
     data.szTip[wide.len()] = 0;
+}
+
+/// Loads the embedded icon at the actual small-icon size the tray renders at
+/// (`SM_CXSMICON`/`SM_CYSMICON`, typically 16x16) rather than `LoadIconW`'s hardcoded large-icon
+/// size (`SM_CXICON`, typically 32x32) -- `LoadImageW` is the only one of the two that can ask
+/// for a specific size from the icon group.
+fn load_tray_icon(hinstance: HINSTANCE) -> anyhow::Result<HICON> {
+    unsafe {
+        let cx = GetSystemMetrics(SM_CXSMICON);
+        let cy = GetSystemMetrics(SM_CYSMICON);
+        let handle = LoadImageW(hinstance, PCWSTR(APP_ICON_ID as _), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR)?;
+        Ok(HICON(handle.0))
+    }
 }
 
 /// Creates the hidden tray window and shows the icon immediately (before the agent has
@@ -138,7 +152,7 @@ pub fn create(
             uID: TRAY_UID,
             uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage: WM_TRAYICON,
-            hIcon: LoadIconW(hinstance, PCWSTR(APP_ICON_ID as _))?,
+            hIcon: load_tray_icon(hinstance)?,
             ..Default::default()
         };
         set_tip(&mut data, BASE_TOOLTIP);
