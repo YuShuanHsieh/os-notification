@@ -30,10 +30,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            // Reuses the icon already embedded via <ApplicationIcon> (Assets/app.ico) in the
-            // .csproj, rather than duplicating it as a separate embedded resource — falls back
-            // to the system placeholder only if extraction ever fails.
-            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application,
+            Icon = ResolveTrayIcon(),
             Text = BaseTooltip,
             ContextMenuStrip = menu,
             Visible = true,
@@ -53,6 +50,23 @@ public sealed class TrayApplicationContext : ApplicationContext
             _ = StartAgentAsync(startAgent);
         };
         startTimer.Start();
+    }
+
+    /// <summary>Reuses the icon already embedded via &lt;ApplicationIcon&gt; (Assets/app.ico) in the
+    /// .csproj, rather than duplicating it as a separate embedded resource. Falls back to the
+    /// system placeholder if extraction fails for any reason -- ExtractAssociatedIcon can throw
+    /// (e.g. ArgumentException for a UNC ExecutablePath) as well as return null, and a failure
+    /// here must not crash the tray any more than a failed agent start should.</summary>
+    private static Icon ResolveTrayIcon()
+    {
+        try
+        {
+            return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+        }
+        catch
+        {
+            return SystemIcons.Application;
+        }
     }
 
     private async Task StartAgentAsync(Func<CancellationToken, Task<AgentHost>> startAgent)
