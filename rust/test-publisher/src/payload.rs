@@ -130,11 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_are_present_as_strings() {
+    fn timestamps_are_valid_rfc3339() {
         let spec = PublishSpec::defaults("u1");
         let payload = build_payload(&spec, "hello", "evt-1");
-        assert!(payload["timestamps"]["producerCreatedAt"].is_string());
-        assert!(payload["timestamps"]["serverPublishedAt"].is_string());
+        let producer = payload["timestamps"]["producerCreatedAt"].as_str().unwrap();
+        let server = payload["timestamps"]["serverPublishedAt"].as_str().unwrap();
+        assert!(chrono::DateTime::parse_from_rfc3339(producer).is_ok());
+        assert!(chrono::DateTime::parse_from_rfc3339(server).is_ok());
     }
 
     #[test]
