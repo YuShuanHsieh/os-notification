@@ -925,7 +925,7 @@ Expected: builds cleanly, no warnings.
 - [ ] **Step 3: Run the full workspace test suite**
 
 Run: `cargo test`
-Expected: all `test-publisher` unit tests still pass (33), plus every pre-existing test in `notify-agent-core`/`notify-agent-console`/`notify-agent-windows` (the Task 1 baseline: 104 unit + 1 live NATS integration test) is unaffected.
+Expected: all `test-publisher` unit tests still pass (34), plus every pre-existing test in `notify-agent-core`/`notify-agent-console`/`notify-agent-windows` (the Task 1 baseline: 104 unit + 1 live NATS integration test) is unaffected.
 
 - [ ] **Step 4: Manual smoke test — usage error path**
 
