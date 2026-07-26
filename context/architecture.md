@@ -77,10 +77,18 @@ through `IIdentityProvider`.
 - The deduplication cache is in memory only, so restart loses deduplication state.
 - The Windows head enforces one process per interactive session with a `Local\`
   mutex.
-- The Rust Windows head creates a visible placeholder tray icon before NATS
-  startup completes, runs the async agent behind a Win32 message loop, and keeps
-  the tray Close action available when startup fails. Close hides the icon,
-  attempts graceful shutdown, and forces process exit after its timeout.
+- The Rust Windows head creates a visible tray icon (custom `.ico`, embedded as
+  a Windows resource — not a system placeholder) before NATS startup completes,
+  runs the async agent behind a Win32 message loop, and keeps the tray Close
+  action available when startup fails. Close hides the icon, attempts graceful
+  shutdown, and forces process exit after its timeout.
 - Rust tray implementation details live in
   `rust/notify-agent-windows/src/tray.rs`; its UI behavior requires a live Windows
-  desktop smoke test.
+  desktop smoke test. The icon itself is `rust/notify-agent-windows/assets/app.ico`,
+  embedded via `icon.rc`/`build.rs` — swapping that file and rebuilding is enough
+  to change it.
+- The C# Windows head's tray icon (`TrayApplicationContext.cs`) is embedded the
+  .NET-native way instead: `<ApplicationIcon>` in `NotificationAgent.Windows.csproj`
+  points at `src/NotificationAgent.Windows/Assets/app.ico`, and the tray icon is
+  read back from the exe itself at runtime (`Icon.ExtractAssociatedIcon`) rather
+  than embedded a second time.

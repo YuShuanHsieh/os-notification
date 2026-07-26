@@ -30,7 +30,10 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            // Reuses the icon already embedded via <ApplicationIcon> (Assets/app.ico) in the
+            // .csproj, rather than duplicating it as a separate embedded resource — falls back
+            // to the system placeholder only if extraction ever fails.
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application,
             Text = BaseTooltip,
             ContextMenuStrip = menu,
             Visible = true,

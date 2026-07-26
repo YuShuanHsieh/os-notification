@@ -193,6 +193,8 @@ With the Windows head running (above), confirm the tray icon and its Close actio
 3. Click "Close". Within a few seconds the tray icon disappears and the process exits — confirm `DesktopAgent.exe` is gone from Task Manager.
 4. **Failure-path check:** point `NOTIFY_NATS_URL` at an unreachable server (e.g. `nats://127.0.0.1:4223`) and relaunch. The tray icon should still appear, its tooltip should mention the agent failed to start, and "Close" should still terminate the process within the same few seconds.
 
+**Changing the tray icon:** replace `src/NotificationAgent.Windows/Assets/app.ico` with a different `.ico` file at the same path, then rebuild (`dotnet build`/`dotnet publish -r win-x64`). No other file needs to change: the `<ApplicationIcon>` MSBuild property in `NotificationAgent.Windows.csproj` embeds whatever is at that path as the exe's native icon resource, and `TrayApplicationContext` reads it back at runtime via `Icon.ExtractAssociatedIcon(Application.ExecutablePath)` rather than embedding it a second time.
+
 ## Development
 
 - **TDD workflow:** every Core component was built test-first; keep it that way. All time-dependent code takes a `TimeProvider` so tests use `FakeTimeProvider` — no sleeps or polling.

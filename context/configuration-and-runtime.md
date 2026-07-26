@@ -62,9 +62,16 @@ selection between them at startup.
 - The device ID file is created beneath
   `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`.
 - The Rust Windows head is a tray application rather than a headless process. It
-  shows a placeholder icon immediately, displays the running version and Close
-  in its context menu, and marks the tooltip when agent startup fails. Close has
-  a bounded graceful-shutdown attempt followed by forced process termination.
+  shows its icon (`rust/notify-agent-windows/assets/app.ico`) immediately,
+  displays the running version and Close in its context menu, and marks the
+  tooltip when agent startup fails. Close has a bounded graceful-shutdown
+  attempt followed by forced process termination. Changing the icon is just
+  swapping that file and rebuilding — see `rust/README.md`.
+- The C# Windows head's tray icon is set via `<ApplicationIcon>` in
+  `NotificationAgent.Windows.csproj` (pointing at
+  `src/NotificationAgent.Windows/Assets/app.ico`); `TrayApplicationContext`
+  extracts it back from the running exe rather than embedding it twice. Same
+  swap-and-rebuild story to change it — see the root `README.md`.
 - Rust Windows builds can be cross-compiled from Linux. The checked-in Docker
   workflow vendors dependencies so the release build can run with network access
   disabled; see `rust/docker/windows-cross.Dockerfile` and

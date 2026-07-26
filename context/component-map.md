@@ -47,6 +47,9 @@ default solution remains cross-platform.
 - `WindowsToastContentFactory.cs` translates a `ToastRequest` to Windows toast XML
   and applies HTTPS URL policy.
 - `WindowsToastRenderer.cs` submits native notifications.
+- `TrayApplicationContext.cs` owns the tray icon, version/Close menu, and
+  startup-failure tooltip; its icon is `Assets/app.ico`, embedded via
+  `<ApplicationIcon>` in `NotificationAgent.Windows.csproj`.
 
 ## Rust ownership
 
@@ -60,7 +63,8 @@ default solution remains cross-platform.
   identity plus AAD token refresh.
 - `rust/notify-agent-windows/src/main.rs` owns Windows startup, identity/auth
   selection, and the async runtime. `tray.rs` owns the tray icon, version/Close
-  menu, startup-failure tooltip, and message loop.
+  menu, startup-failure tooltip, and message loop; its icon is `assets/app.ico`,
+  embedded via `icon.rc`/`build.rs`.
 - `rust/notify-agent-core/src/image_cache.rs` performs bounded, HTTPS-only
   best-effort image caching for Rust Windows toasts.
 

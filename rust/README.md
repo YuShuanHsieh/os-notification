@@ -97,6 +97,8 @@ The linked binary lands at `target/x86_64-pc-windows-gnu/release/notify-agent-wi
 - Click Close — the icon disappears immediately and the process exits (check Task Manager) within ~5 seconds.
 - Point `NOTIFY_NATS_URL` at an unreachable host, relaunch — the tray icon still appears, the tooltip flags the failure (hover to see "... (agent failed to start)"), and Close still terminates the process immediately (no `AgentHost` to wait on).
 
+**Changing the tray icon:** replace `notify-agent-windows/assets/app.ico` with a different (ideally multi-resolution) `.ico` file at the same path, then rebuild — `cargo build --target x86_64-pc-windows-gnu -p notify-agent-windows` re-embeds it automatically. No other file needs to change: `icon.rc`/`build.rs` reference it by resource id, not by content, and `build.rs` declares an explicit `cargo:rerun-if-changed` on both `icon.rc` and `assets/app.ico` so the change is always picked up.
+
 ### Via Docker (no host mingw-w64 install needed)
 
 ```bash
