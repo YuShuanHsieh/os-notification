@@ -610,7 +610,7 @@ pub fn parse(args: &[String]) -> Result<PublishSpec, String> {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p test-publisher`
-Expected: `test result: ok. 24 passed; 0 failed` (7 from Task 1's `spec` module + 17 from this task's `args` module).
+Expected: `test result: ok. 25 passed; 0 failed` (7 from Task 1's `spec` module + 18 from this task's `args` module).
 
 - [ ] **Step 6: Commit**
 
@@ -812,7 +812,7 @@ pub fn build_payload(spec: &PublishSpec, message: &str, event_id: &str) -> Value
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p test-publisher`
-Expected: `test result: ok. 33 passed; 0 failed` (24 from Tasks 1–2 + 9 from this task).
+Expected: `test result: ok. 34 passed; 0 failed` (25 from Tasks 1–2 + 9 from this task).
 
 - [ ] **Step 6: Commit**
 
