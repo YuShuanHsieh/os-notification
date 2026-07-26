@@ -46,7 +46,7 @@ pub fn parse(args: &[String]) -> Result<PublishSpec, String> {
         spec.priority = v.clone();
     }
     if let Some(v) = positionals.get(3) {
-        let c: i64 = v.parse().map_err(|_| "count must be a positive integer".to_string())?;
+        let c: i32 = v.parse().map_err(|_| "count must be a positive integer".to_string())?;
         if c < 1 {
             return Err("count must be a positive integer".to_string());
         }
@@ -71,7 +71,7 @@ pub fn parse(args: &[String]) -> Result<PublishSpec, String> {
             "--priority" => spec.priority = next_value(flags, &mut i, &flag)?,
             "--count" => {
                 let v = next_value(flags, &mut i, &flag)?;
-                let c: i64 = v.parse().map_err(|_| "--count must be a positive integer".to_string())?;
+                let c: i32 = v.parse().map_err(|_| "--count must be a positive integer".to_string())?;
                 if c < 1 {
                     return Err("--count must be a positive integer".to_string());
                 }
@@ -93,7 +93,7 @@ pub fn parse(args: &[String]) -> Result<PublishSpec, String> {
             "--replaceable" => spec.replaceable = true,
             "--delay-ms" => {
                 let v = next_value(flags, &mut i, &flag)?;
-                let d: i64 = v.parse().map_err(|_| "--delay-ms must be a non-negative integer".to_string())?;
+                let d: i32 = v.parse().map_err(|_| "--delay-ms must be a non-negative integer".to_string())?;
                 if d < 0 {
                     return Err("--delay-ms must be a non-negative integer".to_string());
                 }
@@ -236,5 +236,11 @@ mod tests {
     fn flag_missing_value_is_an_error() {
         let err = parse(&args(&["u1", "--title"])).unwrap_err();
         assert_eq!(err, "--title needs a value");
+    }
+
+    #[test]
+    fn count_beyond_i32_range_is_an_error() {
+        let err = parse(&args(&["u1", "--count", "4294967297"])).unwrap_err();
+        assert_eq!(err, "--count must be a positive integer");
     }
 }
