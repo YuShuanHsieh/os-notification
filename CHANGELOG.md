@@ -23,6 +23,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   authentication service, including AAD token refresh.
 - TestPublisher scenario presets and named flags for exercising notification
   flows end to end.
+- Rust `test-publisher` dev tool — a full-parity port of the C# TestPublisher
+  (scenarios, named flags, legacy positional mode).
 - A Docker-based, offline-capable Windows cross-build environment for the Rust
   Windows head.
 
