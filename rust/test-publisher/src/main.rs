@@ -54,10 +54,7 @@ async fn main() -> Result<()> {
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let messages: Vec<String> = spec
-        .messages
-        .clone()
-        .unwrap_or_else(|| std::iter::repeat(spec.message.clone()).take(spec.count as usize).collect());
+    let messages = spec.resolve_messages();
 
     for (i, message) in messages.iter().enumerate() {
         let event_id = generate_event_id();

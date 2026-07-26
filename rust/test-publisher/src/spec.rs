@@ -41,6 +41,12 @@ impl PublishSpec {
             expect: None,
         }
     }
+
+    pub fn resolve_messages(&self) -> Vec<String> {
+        self.messages
+            .clone()
+            .unwrap_or_else(|| std::iter::repeat_n(self.message.clone(), self.count as usize).collect())
+    }
 }
 
 pub fn apply_scenario(spec: &mut PublishSpec, name: &str) -> bool {
@@ -208,5 +214,21 @@ mod tests {
         // dedup doesn't touch these — they stay at PublishSpec::defaults() values.
         assert_eq!(spec.title, "Invoice ready");
         assert_eq!(spec.notification_type, "billing.invoice.ready");
+    }
+
+    #[test]
+    fn resolve_messages_uses_messages_list_when_set() {
+        let mut spec = PublishSpec::defaults("u1");
+        spec.messages = Some(vec!["a".to_string(), "b".to_string()]);
+        spec.count = 5; // should be ignored — messages list wins
+        assert_eq!(spec.resolve_messages(), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn resolve_messages_replicates_message_by_count_when_no_messages_list() {
+        let mut spec = PublishSpec::defaults("u1");
+        spec.message = "hi".to_string();
+        spec.count = 3;
+        assert_eq!(spec.resolve_messages(), vec!["hi".to_string(), "hi".to_string(), "hi".to_string()]);
     }
 }
