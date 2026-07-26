@@ -12,6 +12,14 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[build-dependencies]
+# Unconditional: build-dependency target cfg is evaluated against the HOST (always
+# Linux here, even when cross-compiling to Windows), so this can't be gated the same
+# way the runtime `windows`/`winreg` dependencies below are. build.rs itself checks
+# CARGO_CFG_TARGET_OS (the real build target) and only invokes the resource compiler
+# when actually targeting Windows.
+embed-resource = "2"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Data_Xml_Dom",

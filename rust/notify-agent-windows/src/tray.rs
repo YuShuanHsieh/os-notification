@@ -19,7 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
     GetMessageW, GetWindowLongPtrW, LoadCursorW, LoadIconW, PostMessageW, RegisterClassExW,
     SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, CREATESTRUCTW,
-    GWLP_USERDATA, HMENU, IDC_ARROW, IDI_APPLICATION, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG,
+    GWLP_USERDATA, HMENU, IDC_ARROW, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_LBUTTONUP, WM_NCCREATE,
     WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
@@ -31,6 +31,8 @@ const WM_TRAYICON: u32 = WM_APP + 1;
 const ID_MENU_VERSION: usize = 1001;
 const ID_MENU_CLOSE: usize = 1002;
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Resource id of the embedded icon (see `icon.rc` / `assets/app.ico`, compiled in via `build.rs`).
+const APP_ICON_ID: u16 = 1;
 
 /// `Shell_NotifyIconW` is documented safe to call from any thread, so this small handle (just
 /// the window handle) is shared with the agent thread to flag a startup failure directly,
@@ -136,7 +138,7 @@ pub fn create(
             uID: TRAY_UID,
             uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage: WM_TRAYICON,
-            hIcon: LoadIconW(None, IDI_APPLICATION)?,
+            hIcon: LoadIconW(hinstance, PCWSTR(APP_ICON_ID as _))?,
             ..Default::default()
         };
         set_tip(&mut data, BASE_TOOLTIP);
