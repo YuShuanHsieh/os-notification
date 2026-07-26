@@ -4,7 +4,7 @@
 
 | Variable | Default | Consumer |
 |---|---|---|
-| `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | Both hosts and TestPublisher |
+| `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | Both agents and TestPublisher; Rust also accepts `ws://`/`wss://` |
 | `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | Agent hosts |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | Agent hosts and TestPublisher |
 | `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | Both hosts: path to a NATS `.creds` file |
@@ -17,7 +17,9 @@
 
 `AgentOptions.FromEnvironment` owns transport configuration.
 `EnvironmentIdentityProvider` owns development identity configuration. The Windows
-entry point owns selection between environment and MSAL identity.
+entry point owns selection between environment and MSAL identity. The Rust Windows
+entry point uses environment identity unless `NOTIFY_AAD_CLIENT_ID` selects its
+device-code identity flow.
 
 One detail to preserve: `TestPublisher` currently constructs
 `notify.user.{userId}.desktop` directly; it does not consume
@@ -59,6 +61,14 @@ selection between them at startup.
   falls back to interactive acquisition when UI is required.
 - The device ID file is created beneath
   `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`.
+- The Rust Windows head is a tray application rather than a headless process. It
+  shows a placeholder icon immediately, displays the running version and Close
+  in its context menu, and marks the tooltip when agent startup fails. Close has
+  a bounded graceful-shutdown attempt followed by forced process termination.
+- Rust Windows builds can be cross-compiled from Linux. The checked-in Docker
+  workflow vendors dependencies so the release build can run with network access
+  disabled; see `rust/docker/windows-cross.Dockerfile` and
+  `rust/scripts/build-windows-docker.sh`.
 
 ## Operational caveats
 

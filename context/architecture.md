@@ -4,8 +4,9 @@
 
 This repository is the desktop consumer for user-scoped notifications. A backend
 publisher is out of scope; `tools/TestPublisher` is a development substitute. The
-agent uses plain Core NATS, so delivery is online-only, at-most-once, and
-best-effort: there is no durable stream, replay, or offline recovery.
+C# and Rust agents share the same wire contracts and use plain Core NATS, so
+delivery is online-only, at-most-once, and best-effort: there is no durable
+stream, replay, or offline recovery.
 
 ## Event flow
 
@@ -23,9 +24,10 @@ Core NATS: notify.user.{userId}.desktop
   -> Core NATS: notify.ack.desktop
 ```
 
-`AgentHost` is the composition root. It resolves identity, opens NATS, constructs
-the cache/pipeline/aggregator, and owns subscription and disposal. Start tracing at
-`src/NotificationAgent.Core/Hosting/AgentHost.cs`.
+`AgentHost` is the composition root in both implementations. It resolves identity,
+opens NATS, constructs the cache/pipeline/aggregator, and owns subscription and
+disposal. Start tracing at `src/NotificationAgent.Core/Hosting/AgentHost.cs` for
+C# or `rust/notify-agent-core/src/host.rs` for Rust.
 
 ## Processing stages
 
@@ -51,12 +53,14 @@ no acknowledgement beyond the stage already reached.
 ## Dependency direction
 
 ```text
-ConsoleHost ---------> Core <--------- Windows
+ConsoleHost ---------> C# Core <--------- C# Windows
                          ^
-                         |
                     Core.Tests
 
-Windows.Tests ------> Windows
+Rust Console --------> Rust Core <-------- Rust Windows
+                         ^
+                    Rust Core tests
+
 TestPublisher (standalone NATS development tool)
 ```
 
@@ -73,3 +77,10 @@ through `IIdentityProvider`.
 - The deduplication cache is in memory only, so restart loses deduplication state.
 - The Windows head enforces one process per interactive session with a `Local\`
   mutex.
+- The Rust Windows head creates a visible placeholder tray icon before NATS
+  startup completes, runs the async agent behind a Win32 message loop, and keeps
+  the tray Close action available when startup fails. Close hides the icon,
+  attempts graceful shutdown, and forces process exit after its timeout.
+- Rust tray implementation details live in
+  `rust/notify-agent-windows/src/tray.rs`; its UI behavior requires a live Windows
+  desktop smoke test.

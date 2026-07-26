@@ -7,6 +7,9 @@
   acknowledgement JSON, and an optional live NATS path.
 - `tests/NotificationAgent.Windows.Tests` inspects generated toast XML for text,
   attribution, HTTPS actions, and circular avatar images.
+- Rust unit tests live beside the implementation under `rust/notify-agent-core`
+  and include a live-path NATS integration test in
+  `rust/notify-agent-core/tests/nats_integration.rs`.
 
 Tests use xUnit. Time-dependent core tests use
 `Microsoft.Extensions.TimeProvider.Testing.FakeTimeProvider`; new deterministic
@@ -44,6 +47,17 @@ dotnet build src/NotificationAgent.Windows/NotificationAgent.Windows.csproj
 dotnet test tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj
 dotnet format tests/NotificationAgent.Windows.Tests/NotificationAgent.Windows.Tests.csproj \
   --verify-no-changes --no-restore
+
+cd rust
+cargo test
+cargo build
+```
+
+For the Rust Windows head, use the repository's Docker cross-build workflow:
+
+```bash
+cd rust
+./scripts/build-windows-docker.sh
 ```
 
 Run formatting verification after restore/build because `--no-restore` keeps the
@@ -73,3 +87,7 @@ a subscription exists.
   and invalid-input behavior.
 - Windows toast tests should inspect generated XML and include both accepted and
   rejected URL cases.
+- Rust tray UI (`rust/notify-agent-windows/src/tray.rs`) is not covered by
+  automated tests; verify it manually on Windows by checking immediate icon
+  appearance, version/Close menu behavior, clean exit, and the startup-failure
+  tooltip path. Rust Windows compilation does not prove desktop behavior.

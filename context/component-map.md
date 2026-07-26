@@ -10,6 +10,9 @@
 | `tests/NotificationAgent.Core.Tests` | Cross-platform unit and optional NATS integration tests | Core, xUnit, fake time |
 | `tests/NotificationAgent.Windows.Tests` | Windows toast XML/content tests | Windows project, xUnit |
 | `tools/TestPublisher` | Publishes sample events and observes acknowledgements | `NATS.Net` |
+| `rust/notify-agent-core` | Cross-platform Rust pipeline, identity, NATS host, auth, and toast contracts | `async-nats`, Tokio |
+| `rust/notify-agent-console` | Rust Linux/development head and console renderer | Rust Core |
+| `rust/notify-agent-windows` | Rust Windows head, WinRT toast renderer, image cache, and system tray | Rust Core, Windows APIs |
 
 The solution file includes Core, Core.Tests, ConsoleHost, and TestPublisher. The
 Windows application and Windows tests are intentionally built separately so the
@@ -44,6 +47,22 @@ default solution remains cross-platform.
 - `WindowsToastContentFactory.cs` translates a `ToastRequest` to Windows toast XML
   and applies HTTPS URL policy.
 - `WindowsToastRenderer.cs` submits native notifications.
+
+## Rust ownership
+
+- `rust/notify-agent-core/src/host.rs` is the Rust composition root and accepts
+  an optional `NatsAuthProvider`.
+- `rust/notify-agent-core/src/parser.rs`, `pipeline.rs`, `aggregator.rs`, and
+  `dedup.rs` own the bounded wire-processing pipeline; `toast.rs` and
+  `toast_xml.rs` own renderer-neutral and Windows XML toast shaping.
+- `rust/notify-agent-core/src/nats_auth.rs` owns credentials-file and external
+  auth-service provider contracts. `identity.rs` owns environment and device-code
+  identity plus AAD token refresh.
+- `rust/notify-agent-windows/src/main.rs` owns Windows startup, identity/auth
+  selection, and the async runtime. `tray.rs` owns the tray icon, version/Close
+  menu, startup-failure tooltip, and message loop.
+- `rust/notify-agent-core/src/image_cache.rs` performs bounded, HTTPS-only
+  best-effort image caching for Rust Windows toasts.
 
 ## Historical material
 
