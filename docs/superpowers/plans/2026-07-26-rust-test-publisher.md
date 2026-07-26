@@ -223,7 +223,7 @@ mod tests {
 
 - [ ] **Step 5: Run the tests to verify they fail**
 
-Run: `cargo test -p test-publisher --lib`
+Run: `cargo test -p test-publisher`
 Expected: the crate compiles cleanly, then every test panics with `not yet implemented` (from the `todo!()` bodies) — `cargo test` reports `FAILED` for all 7 tests. If it fails to compile instead, fix the struct/signature mismatch before continuing.
 
 - [ ] **Step 6: Implement `PublishSpec::defaults` and `apply_scenario`**
@@ -315,7 +315,7 @@ pub fn apply_scenario(spec: &mut PublishSpec, name: &str) -> bool {
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `cargo test -p test-publisher --lib`
+Run: `cargo test -p test-publisher`
 Expected: `test result: ok. 7 passed; 0 failed`
 
 - [ ] **Step 8: Commit**
@@ -491,7 +491,7 @@ mod tests {
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `cargo test -p test-publisher --lib`
+Run: `cargo test -p test-publisher`
 Expected: the crate compiles cleanly, then every test calling `parse` panics with `not yet implemented` — `cargo test` reports `FAILED` for all of this module's tests (the Task 1 `spec` tests still pass). If it fails to compile instead, fix the type mismatch before continuing.
 
 - [ ] **Step 4: Implement `parse`**
@@ -609,7 +609,7 @@ pub fn parse(args: &[String]) -> Result<PublishSpec, String> {
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `cargo test -p test-publisher --lib`
+Run: `cargo test -p test-publisher`
 Expected: `test result: ok. 24 passed; 0 failed` (7 from Task 1's `spec` module + 17 from this task's `args` module).
 
 - [ ] **Step 6: Commit**
@@ -747,7 +747,7 @@ mod tests {
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `cargo test -p test-publisher --lib`
+Run: `cargo test -p test-publisher`
 Expected: the crate compiles cleanly, then every test calling `build_payload` panics with `not yet implemented` — `cargo test` reports `FAILED` for all of this module's tests (the Task 1/2 tests still pass).
 
 - [ ] **Step 4: Implement `build_payload`**
@@ -811,7 +811,7 @@ pub fn build_payload(spec: &PublishSpec, message: &str, event_id: &str) -> Value
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `cargo test -p test-publisher --lib`
+Run: `cargo test -p test-publisher`
 Expected: `test result: ok. 33 passed; 0 failed` (24 from Tasks 1–2 + 9 from this task).
 
 - [ ] **Step 6: Commit**
