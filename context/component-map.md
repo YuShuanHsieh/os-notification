@@ -13,6 +13,7 @@
 | `rust/notify-agent-core` | Cross-platform Rust pipeline, identity, NATS host, auth, and toast contracts | `async-nats`, Tokio |
 | `rust/notify-agent-console` | Rust Linux/development head and console renderer | Rust Core |
 | `rust/notify-agent-windows` | Rust Windows head, WinRT toast renderer, image cache, and system tray | Rust Core, Windows APIs |
+| `rust/test-publisher` | Rust dev publisher for test events and ack observation (port of `tools/TestPublisher`) | `async-nats`, Tokio |
 
 The solution file includes Core, Core.Tests, ConsoleHost, and TestPublisher. The
 Windows application and Windows tests are intentionally built separately so the
