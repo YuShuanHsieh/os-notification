@@ -87,9 +87,23 @@ rustup target add x86_64-pc-windows-gnu  # one-time
 cargo build --release --target x86_64-pc-windows-gnu -p notify-agent-windows
 ```
 
-The linked binary lands at `target/x86_64-pc-windows-gnu/release/notify-agent-windows.exe`. Copy it to a Windows 11 machine and run it (same environment variables as the console head apply). It registers a per-user AppUserModelID, enforces a single running instance per session, and renders native toast notifications including avatar images (downloaded and cached under `%LOCALAPPDATA%\DesktopNotificationAgent\`).
+The linked binary lands at `target/x86_64-pc-windows-gnu/release/notify-agent-windows.exe`. Copy it to a Windows 11 machine and run it (same environment variables as the console head apply). It registers a per-user AppUserModelID, enforces a single running instance per session, and renders native toast notifications including avatar images (downloaded and cached under `%LOCALAPPDATA%\DesktopNotificationAgent\`). It runs as a system tray app (no console window): a placeholder icon appears in the tray immediately on launch, and right-clicking it shows the running version plus a Close item that shuts the agent down.
 
 `.cargo/config.toml` in this directory configures the mingw linker for the cross-compile target automatically — no manual linker flags needed.
+
+**Manual smoke-test checklist** (tray/`Shell_NotifyIconW` code has no automated coverage — it needs a live Windows desktop session):
+- Launch the `.exe` — a placeholder tray icon appears immediately, before the agent has finished connecting to NATS.
+- Right-click the icon — the menu shows "Version x.y.z" (disabled, not clickable) and "Close".
+- Click Close — the icon disappears immediately and the process exits (check Task Manager) within ~5 seconds.
+- Point `NOTIFY_NATS_URL` at an unreachable host, relaunch — the tray icon still appears, the tooltip flags the failure (hover to see "... (agent failed to start)"), and Close still terminates the process immediately (no `AgentHost` to wait on).
+
+### Via Docker (no host mingw-w64 install needed)
+
+```bash
+./scripts/build-windows-docker.sh
+```
+
+This builds a small image (`docker/windows-cross.Dockerfile`, Rust + `mingw-w64`) and runs the same `cargo build --release --target x86_64-pc-windows-gnu -p notify-agent-windows` inside it. The `rust/` directory is bind-mounted into the container at `/workspace`, so `target/` is written straight to the host filesystem — the `.exe` lands at the same path as the host build (`target/x86_64-pc-windows-gnu/release/notify-agent-windows.exe`) and stays there after the container exits. The Cargo registry and rustup toolchain are cached in named Docker volumes so repeat builds don't re-download them.
 
 ## Troubleshooting
 
