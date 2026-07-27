@@ -1,0 +1,225 @@
+package pipeline_test
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/YuShuanHsieh/os-notification/golang/internal/clock"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/dedup"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/pipeline"
+)
+
+func criticalPayload(id string) []byte {
+	return []byte(fmt.Sprintf(
+		`{"eventId":"%s","target":{"userId":"u1"},`+
+			`"content":{"title":"T","message":"M"},`+
+			`"classification":{"priority":"critical","deduplicationKey":"%s"}}`,
+		id, id))
+}
+
+func newDedupCache() *dedup.Cache {
+	clk := clock.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	return dedup.NewCache(100, 10*time.Minute, clk)
+}
+
+// recorder collects observed events behind a mutex and lets tests wait for a
+// specific count without relying on time.Sleep races.
+type recorder struct {
+	mu     sync.Mutex
+	events []*model.InboundNotification
+}
+
+func (r *recorder) onObserved(evt *model.InboundNotification) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, evt)
+}
+
+func (r *recorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.events)
+}
+
+func (r *recorder) snapshot() []*model.InboundNotification {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*model.InboundNotification, len(r.events))
+	copy(out, r.events)
+	return out
+}
+
+// waitUntil polls cond until it returns true or the timeout elapses, failing
+// the test on timeout. Avoids fixed time.Sleep races.
+func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !cond() {
+		t.Fatalf("condition not reached within %s", timeout)
+	}
+}
+
+// runAndWaitStop starts p.Run(ctx) in a goroutine and returns a function that
+// cancels ctx and blocks (with a timeout) until Run has returned, failing the
+// test if Run hangs -- this is how every test proves no goroutine leak.
+func runAndWaitStop(t *testing.T, p *pipeline.Pipeline) (ctx context.Context, stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.Run(ctx)
+		close(done)
+	}()
+	return ctx, func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("pipeline.Run did not return after context cancellation (goroutine leak?)")
+		}
+	}
+}
+
+func TestValidPayloadTriggersOnObservedOnceWithParsedEvent(t *testing.T) {
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+
+	_, stop := runAndWaitStop(t, p)
+	defer stop()
+
+	if !p.TryEnqueue(criticalPayload("evt-1")) {
+		t.Fatal("TryEnqueue returned false, want true (queue not full)")
+	}
+
+	waitUntil(t, 2*time.Second, func() bool { return rec.count() == 1 })
+
+	events := rec.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("want exactly 1 observed event, got %d", len(events))
+	}
+	got := events[0]
+	if got.EventID != "evt-1" {
+		t.Errorf("EventID = %q, want %q", got.EventID, "evt-1")
+	}
+	if got.UserID != "u1" {
+		t.Errorf("UserID = %q, want %q", got.UserID, "u1")
+	}
+	if got.Title != "T" || got.Message != "M" {
+		t.Errorf("Title/Message = %q/%q, want %q/%q", got.Title, got.Message, "T", "M")
+	}
+	if got.Classification.Priority != model.PriorityCritical {
+		t.Errorf("Priority = %v, want PriorityCritical", got.Classification.Priority)
+	}
+	if got.Classification.DeduplicationKey != "evt-1" {
+		t.Errorf("DeduplicationKey = %q, want %q", got.Classification.DeduplicationKey, "evt-1")
+	}
+
+	// Give any stray extra callback a chance to arrive before final assert.
+	time.Sleep(50 * time.Millisecond)
+	if c := rec.count(); c != 1 {
+		t.Fatalf("onObserved fired %d times, want exactly 1", c)
+	}
+}
+
+func TestInvalidPayloadNeverTriggersOnObservedAndWorkerSurvives(t *testing.T) {
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+
+	_, stop := runAndWaitStop(t, p)
+	defer stop()
+
+	if !p.TryEnqueue([]byte("garbage")) {
+		t.Fatal("TryEnqueue(garbage) returned false, want true (queue not full)")
+	}
+	// Prove the worker survived the malformed payload by enqueuing a valid
+	// one afterwards and waiting for it to be observed.
+	if !p.TryEnqueue(criticalPayload("evt-ok")) {
+		t.Fatal("TryEnqueue(evt-ok) returned false, want true (queue not full)")
+	}
+
+	waitUntil(t, 2*time.Second, func() bool { return rec.count() == 1 })
+
+	events := rec.snapshot()
+	if len(events) != 1 || events[0].EventID != "evt-ok" {
+		t.Fatalf("want exactly 1 observed event with id evt-ok, got %+v", events)
+	}
+}
+
+func TestDuplicateDeduplicationKeyTriggersOnObservedOnce(t *testing.T) {
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+
+	_, stop := runAndWaitStop(t, p)
+	defer stop()
+
+	p.TryEnqueue(criticalPayload("evt-dup"))
+	p.TryEnqueue(criticalPayload("evt-dup"))
+	p.TryEnqueue(criticalPayload("evt-dup"))
+
+	waitUntil(t, 2*time.Second, func() bool { return rec.count() >= 1 })
+	// Grace period: no further onObserved calls should arrive for the
+	// duplicate payloads.
+	time.Sleep(100 * time.Millisecond)
+
+	if c := rec.count(); c != 1 {
+		t.Fatalf("onObserved fired %d times, want exactly 1 (duplicates should be suppressed)", c)
+	}
+}
+
+func TestTryEnqueueRejectsWhenQueueFullWithoutRun(t *testing.T) {
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 2, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+
+	// Run is never started, so nothing drains the intake queue.
+	if !p.TryEnqueue(criticalPayload("e1")) {
+		t.Fatal("1st TryEnqueue: got false, want true (within capacity)")
+	}
+	if !p.TryEnqueue(criticalPayload("e2")) {
+		t.Fatal("2nd TryEnqueue: got false, want true (within capacity)")
+	}
+	if p.TryEnqueue(criticalPayload("e3")) {
+		t.Fatal("3rd TryEnqueue: got true, want false (queue full)")
+	}
+
+	if got := p.DroppedQueueFull(); got != 1 {
+		t.Fatalf("DroppedQueueFull() = %d, want 1", got)
+	}
+
+	// A second rejection increments further.
+	if p.TryEnqueue(criticalPayload("e4")) {
+		t.Fatal("4th TryEnqueue: got true, want false (queue still full)")
+	}
+	if got := p.DroppedQueueFull(); got != 2 {
+		t.Fatalf("DroppedQueueFull() = %d, want 2", got)
+	}
+}
+
+func TestRunReturnsPromptlyOnContextCancelWithoutLeakingGoroutines(t *testing.T) {
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.Run(ctx)
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline.Run did not return after context cancellation (goroutine leak?)")
+	}
+}
