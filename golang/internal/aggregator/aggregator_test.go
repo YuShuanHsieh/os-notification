@@ -1,6 +1,7 @@
 package aggregator_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -263,6 +264,56 @@ func TestFlushClearsBucketsSoTheOriginalWindowLaterDoesNotDoubleRender(t *testin
 	clk.Advance(10 * time.Second)
 	if len(rec.batches) != 1 {
 		t.Fatalf("want no double-render after the original window elapses post-Flush, got %d renders", len(rec.batches))
+	}
+}
+
+// TestPanickingRenderDoesNotCrashAndSubsequentBatchesStillRender proves the
+// panic-containment fix: a render callback that panics for one
+// critical/lone/flushed batch must not crash the calling goroutine (proven
+// simply by this test function returning normally instead of the test
+// process crashing), and unrelated later batches must still render
+// correctly afterwards -- a poisoned batch's panic must not corrupt the
+// Aggregator's internal state for anything that follows.
+func TestPanickingRenderDoesNotCrashAndSubsequentBatchesStillRender(t *testing.T) {
+	clk := clock.NewFakeClock(epoch)
+	rec := &recorder{}
+	render := func(batch []*model.InboundNotification) {
+		if len(batch) == 1 && strings.HasPrefix(batch[0].EventID, "poison") {
+			panic("boom: simulated render panic")
+		}
+		rec.render(batch)
+	}
+	agg := aggregator.New(defaultOpts(), clk, render)
+
+	// Critical events render synchronously on the caller's (this test's)
+	// goroutine -- the most direct way to prove Add() itself survives a
+	// panicking render.
+	agg.Add(event("poison", model.PriorityCritical, "agg.key", false, "m"))
+	agg.Add(event("e-ok", model.PriorityCritical, "agg.key", false, "m"))
+
+	if len(rec.batches) != 1 {
+		t.Fatalf("want 1 successful render (poison batch contained, not recorded), got %d", len(rec.batches))
+	}
+	if got := ids(rec.batches[0]); len(got) != 1 || got[0] != "e-ok" {
+		t.Fatalf("want batch [e-ok] to render normally after the poisoned batch, got %v", got)
+	}
+
+	// Also prove a poisoned window-fired batch doesn't wedge that bucket's
+	// key or the aggregator's internal map: add another poison event to a
+	// fresh bucket, let its window fire (still via the timer goroutine),
+	// then prove a subsequent event for the *same* aggregation key still
+	// batches and renders normally afterwards.
+	agg.Add(event("poison2", model.PriorityNormal, "timer.key", false, "m"))
+	clk.Advance(10 * time.Second) // fires the window timer synchronously (FakeClock)
+
+	agg.Add(event("after-poison", model.PriorityNormal, "timer.key", false, "m"))
+	clk.Advance(10 * time.Second)
+
+	if len(rec.batches) != 2 {
+		t.Fatalf("want 2 successful renders total after the timer-fired poison batch, got %d", len(rec.batches))
+	}
+	if got := ids(rec.batches[1]); len(got) != 1 || got[0] != "after-poison" {
+		t.Fatalf("want batch [after-poison] to render normally in a fresh bucket, got %v", got)
 	}
 }
 

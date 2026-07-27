@@ -138,8 +138,16 @@ func (p *Pipeline) workerLoop(ctx context.Context) {
 
 // process parses and dedups a single payload, invoking onObserved for every
 // valid first-seen event. Parse errors and duplicates are dropped silently
-// -- one poison payload must never crash a worker.
+// -- one poison payload must never crash a worker. A panic anywhere in this
+// path (parsing, dedup, or the onObserved callback) is also contained here,
+// so a single poisoned payload can only ever cost itself, never the worker
+// goroutine or any subsequent payload (context/architecture.md: "a single
+// bad event cannot terminate the agent").
 func (p *Pipeline) process(item queueItem) {
+	defer func() {
+		_ = recover()
+	}()
+
 	evt, err := parser.Parse(item.payload)
 	if err != nil {
 		return

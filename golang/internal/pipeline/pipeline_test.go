@@ -272,3 +272,35 @@ func TestTryEnqueueStampsAgentReceivedAtAtIntakeNotAtWorkerProcessingTime(t *tes
 		t.Errorf("evt-late.AgentReceivedAt = %v, want %v (time of its TryEnqueue call)", late.AgentReceivedAt, t1)
 	}
 }
+
+// TestPanickingOnObservedDoesNotCrashWorkerAndSubsequentEventsStillProcess
+// proves the panic-containment fix: a poisoned callback that panics on one
+// event must not crash the worker goroutine, and a following, unrelated
+// event must still be processed normally afterwards.
+func TestPanickingOnObservedDoesNotCrashWorkerAndSubsequentEventsStillProcess(t *testing.T) {
+	rec := &recorder{}
+	onObserved := func(evt *model.InboundNotification) {
+		if evt.EventID == "evt-poison" {
+			panic("boom: simulated onObserved panic")
+		}
+		rec.onObserved(evt)
+	}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), onObserved, clock.RealClock{})
+
+	_, stop := runAndWaitStop(t, p)
+	defer stop()
+
+	if !p.TryEnqueue(criticalPayload("evt-poison")) {
+		t.Fatal("TryEnqueue(evt-poison) returned false, want true")
+	}
+	if !p.TryEnqueue(criticalPayload("evt-ok")) {
+		t.Fatal("TryEnqueue(evt-ok) returned false, want true")
+	}
+
+	waitUntil(t, 2*time.Second, func() bool { return rec.count() == 1 })
+
+	events := rec.snapshot()
+	if len(events) != 1 || events[0].EventID != "evt-ok" {
+		t.Fatalf("want exactly evt-ok observed (poison event contained, not observed), got %+v", events)
+	}
+}

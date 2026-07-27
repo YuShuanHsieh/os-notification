@@ -103,7 +103,7 @@ func New(opts Options, clk clock.Clock, render RenderFunc) *Aggregator {
 //     silent drop, not a panic or an unbounded map).
 func (a *Aggregator) Add(event *model.InboundNotification) {
 	if event.Classification.Priority == model.PriorityCritical {
-		a.render([]*model.InboundNotification{event})
+		a.safeRender([]*model.InboundNotification{event})
 		return
 	}
 
@@ -150,7 +150,7 @@ func (a *Aggregator) fire(key bucketKey) {
 	if !ok || len(b.events) == 0 {
 		return
 	}
-	a.render(b.events)
+	a.safeRender(b.events)
 }
 
 // Flush immediately renders every bucket that currently has pending content
@@ -170,7 +170,20 @@ func (a *Aggregator) Flush() {
 			b.timer.Stop()
 		}
 		if len(b.events) > 0 {
-			a.render(b.events)
+			a.safeRender(b.events)
 		}
 	}
+}
+
+// safeRender invokes the injected RenderFunc with a recover() guard, so a
+// panic inside content-building or rendering for one batch can't kill the
+// caller's goroutine (the caller of Add, for a critical event) or the
+// aggregator's own timer goroutine (for a window-fired or flushed batch) --
+// matching the documented "a single bad event cannot terminate the agent"
+// contract (context/architecture.md).
+func (a *Aggregator) safeRender(batch []*model.InboundNotification) {
+	defer func() {
+		_ = recover()
+	}()
+	a.render(batch)
 }
