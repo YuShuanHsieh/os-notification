@@ -3,16 +3,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"github.com/YuShuanHsieh/os-notification/golang/internal/imagecache"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/toast"
@@ -62,58 +60,44 @@ func (r *WindowsRenderer) Show(ctx context.Context, req toast.ToastRequest) (tim
 	return time.Now(), nil
 }
 
-// showToastViaPowerShell submits xml by running a short PowerShell script
-// through -EncodedCommand (base64 UTF-16LE). Using -EncodedCommand instead
-// of interpolating xml into a -Command string sidesteps PowerShell argv/
-// quoting escaping entirely — the toast XML (including any text the network
-// producer supplied) never has to be shell-escaped, only embedded as a
-// single-quoted PowerShell string literal inside the encoded script, which
-// only requires doubling literal single quotes (defense in depth: the XML
-// builder already XML-escapes all variable content, including replacing '
-// with &apos;, so no unescaped ' should ever reach here).
+// showToastViaPowerShell submits xml by running a short, fixed-size
+// PowerShell script through -EncodedCommand (base64 UTF-16LE), passing xml
+// itself to the subprocess over stdin rather than embedding it in the
+// script text.
+//
+// This split matters because -EncodedCommand's payload is still subject to
+// Windows' CreateProcess command-line length ceiling (~32,767 UTF-16
+// characters for lpCommandLine); base64-encoding UTF-16LE text expands it
+// ~2.67x. The old approach interpolated xml into the script before
+// encoding it, so a large producer-controlled value (e.g. content.
+// secondaryText / Attribution, embedded verbatim and un-truncated, which
+// this product's payload budget allows to reach a few KB) could push the
+// encoded command past that ceiling — well within the documented 32 KiB
+// total payload limit — causing powershell.exe to silently fail to launch
+// or truncate the command, with no submitted_to_windows ack ever sent.
+// Piping xml via stdin instead means the script's own -EncodedCommand size
+// no longer scales with producer content length at all: buildPowerShellScript
+// takes no xml parameter, so its output (and therefore the encoded command)
+// is constant-size regardless of how long title/message/attribution/URLs
+// are. It also means xml needs no shell-level escaping (only the XML-level
+// escaping windowstoast.XMLEscape already does): it never becomes part of a
+// quoted string literal, just raw bytes on a pipe.
 func showToastViaPowerShell(ctx context.Context, xml string) error {
 	runCtx, cancel := context.WithTimeout(ctx, powershellTimeout)
 	defer cancel()
 
-	script := buildPowerShellScript(xml)
+	script := buildPowerShellScript(aumid)
 	encoded := encodeCommand(script)
 
 	cmd := exec.CommandContext(runCtx, "powershell.exe",
 		"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
 		"-EncodedCommand", encoded)
+	cmd.Stdin = bytes.NewReader(buildStdinPayload(xml))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("powershell toast submission failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
-}
-
-// buildPowerShellScript builds the script that loads the WinRT toast types,
-// parses xml into an XmlDocument, and shows it under this agent's aumid —
-// the same identity registered in the registry and set via
-// SetCurrentProcessExplicitAppUserModelID (aumid.go), so the toast displays
-// with this agent's name/icon instead of "Windows PowerShell".
-func buildPowerShellScript(xml string) string {
-	escapedXML := strings.ReplaceAll(xml, "'", "''")
-	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] > $null
-$xmlDoc = New-Object Windows.Data.Xml.Dom.XmlDocument
-$xmlDoc.LoadXml('%s')
-$toast = New-Object Windows.UI.Notifications.ToastNotification $xmlDoc
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('%s').Show($toast)
-`, escapedXML, aumid)
-}
-
-// encodeCommand base64-encodes script as UTF-16LE, the encoding
-// powershell.exe -EncodedCommand requires.
-func encodeCommand(script string) string {
-	u16 := utf16.Encode([]rune(script))
-	buf := make([]byte, len(u16)*2)
-	for i, v := range u16 {
-		binary.LittleEndian.PutUint16(buf[i*2:], v)
-	}
-	return base64.StdEncoding.EncodeToString(buf)
 }
 
 // defaultImageCacheDir resolves the production image cache directory,

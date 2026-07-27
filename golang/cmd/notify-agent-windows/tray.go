@@ -86,6 +86,7 @@ func (a *trayApp) startAgent() {
 	// gap versus the C#/Rust Windows heads, not something this task adds.
 	h, err := host.Start(context.Background(), opts, identity.EnvIdentity{}, renderer, authProvider)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "notify-agent-windows: agent failed to start: %v\n", err)
 		systray.SetTooltip(fmt.Sprintf("%s (agent failed to start)", baseTooltip))
 		return
 	}
