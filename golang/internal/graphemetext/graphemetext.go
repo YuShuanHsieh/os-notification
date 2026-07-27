@@ -8,9 +8,11 @@ package graphemetext
 
 import "github.com/rivo/uniseg"
 
-// Truncate returns s truncated to at most maxClusters extended grapheme
-// clusters. If s already has maxClusters or fewer clusters, it is returned
-// unchanged. A maxClusters of 0 returns the empty string.
+// Truncate returns s unchanged if it has at most maxClusters extended
+// grapheme clusters. Otherwise it returns the first maxClusters-1 clusters
+// followed by "…", matching GraphemeText.cs's Truncate exactly (ellipsis
+// included in the returned length budget, never splitting a cluster).
+// A maxClusters of 0 or less returns the empty string.
 func Truncate(s string, maxClusters int) string {
 	if maxClusters <= 0 {
 		return ""
@@ -18,14 +20,16 @@ func Truncate(s string, maxClusters int) string {
 
 	gr := uniseg.NewGraphemes(s)
 	count := 0
-	end := 0
+	keepEnd := 0 // byte offset right after the (maxClusters-1)-th cluster
 	for gr.Next() {
 		count++
 		if count > maxClusters {
-			return s[:end]
+			return s[:keepEnd] + "…"
 		}
 		_, to := gr.Positions()
-		end = to
+		if count == maxClusters-1 {
+			keepEnd = to
+		}
 	}
 
 	// Reached the end of s without exceeding maxClusters.

@@ -9,14 +9,12 @@ func TestTruncate_ShortAsciiStringUnchanged(t *testing.T) {
 	}
 }
 
-func TestTruncate_LongAsciiStringTruncatedToExactLimit(t *testing.T) {
+func TestTruncate_LongAsciiStringKeepsLimitMinusOnePlusEllipsis(t *testing.T) {
+	// Matches GraphemeText.cs exactly: SubstringByTextElements(0, maxGraphemes-1) + "…".
 	got := Truncate("abcdefghij", 5)
-	want := "abcde"
+	want := "abcd…"
 	if got != want {
 		t.Errorf("Truncate(%q, 5) = %q, want %q", "abcdefghij", got, want)
-	}
-	if runeCount := len([]rune(got)); runeCount != 5 {
-		t.Errorf("expected exactly 5 characters, got %d (%q)", runeCount, got)
 	}
 }
 
@@ -25,30 +23,31 @@ func TestTruncate_NeverSplitsMultiCodepointEmoji(t *testing.T) {
 	// One grapheme cluster, four runes joined by zero-width joiners.
 	family := "\U0001F469‍\U0001F469‍\U0001F467‍\U0001F466"
 
-	// Limit of 1 cluster falls squarely in the middle of the family emoji's
-	// runes; the whole cluster must be kept, never split.
+	// Exactly at the limit: no truncation, no ellipsis.
 	got := Truncate(family, 1)
 	if got != family {
 		t.Errorf("Truncate(family, 1) = %q, want the full family emoji unchanged (%q)", got, family)
 	}
 
-	// Two clusters: family + a plain "a" grapheme. Limit of 1 must keep only
-	// the family cluster intact, not a partial one.
+	// Two clusters (family + "a"), limit 1: the kept portion is 0 clusters
+	// (maxClusters-1 = 0) plus the ellipsis — never a partial family cluster.
 	two := family + "a"
 	got = Truncate(two, 1)
-	if got != family {
-		t.Errorf("Truncate(two, 1) = %q, want %q (family cluster kept whole)", got, family)
+	if got != "…" {
+		t.Errorf("Truncate(two, 1) = %q, want %q", got, "…")
 	}
 
-	// Two full family emojis, limit of 1: must keep exactly the first family
-	// cluster and never a partial second one.
-	twoFamilies := family + family
-	got = Truncate(twoFamilies, 1)
-	if got != family {
-		t.Errorf("Truncate(twoFamilies, 1) = %q, want %q", got, family)
+	// Three clusters (family + "a" + "b"), limit 2: kept portion is exactly
+	// 1 cluster (the whole family, never split) plus the ellipsis.
+	three := family + "a" + "b"
+	got = Truncate(three, 2)
+	want := family + "…"
+	if got != want {
+		t.Errorf("Truncate(three, 2) = %q, want %q (family cluster kept whole)", got, want)
 	}
 
 	// At the exact cluster count, string is unchanged.
+	twoFamilies := family + family
 	got = Truncate(twoFamilies, 2)
 	if got != twoFamilies {
 		t.Errorf("Truncate(twoFamilies, 2) = %q, want unchanged %q", got, twoFamilies)
