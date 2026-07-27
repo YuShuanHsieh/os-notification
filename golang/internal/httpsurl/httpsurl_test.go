@@ -48,6 +48,35 @@ func TestValid_RejectsOversizedUrl(t *testing.T) {
 	}
 }
 
+// TestValid_MeasuresLengthInRunesNotBytes proves the fix for the
+// bytes-vs-characters length bug: a URL containing multi-byte runes must be
+// judged by its *character* count against MaxURLLength, not its byte count
+// -- otherwise a URL well within the 2048-character contract limit could be
+// rejected purely because non-ASCII characters take more than one byte each
+// in UTF-8.
+func TestValid_MeasuresLengthInRunesNotBytes(t *testing.T) {
+	const prefix = "https://example.com/"
+	// 'é' encodes as 2 bytes in UTF-8, so this URL's byte length is well over
+	// 2048 even though its rune (character) count lands exactly at the
+	// MaxURLLength boundary.
+	runeCount := MaxURLLength - len([]rune(prefix))
+	atBoundary := prefix + strings.Repeat("é", runeCount)
+	if got := len([]rune(atBoundary)); got != MaxURLLength {
+		t.Fatalf("test setup: rune count = %d, want exactly %d", got, MaxURLLength)
+	}
+	if got := len(atBoundary); got <= MaxURLLength {
+		t.Fatalf("test setup: expected byte length (%d) to exceed MaxURLLength (%d) for this to be a meaningful test", got, MaxURLLength)
+	}
+	if !Valid(atBoundary) {
+		t.Errorf("expected a URL with exactly %d runes to be valid despite its larger byte length", MaxURLLength)
+	}
+
+	overBoundary := prefix + strings.Repeat("é", runeCount+1)
+	if Valid(overBoundary) {
+		t.Errorf("expected a URL with %d runes (over MaxURLLength) to be rejected", MaxURLLength+1)
+	}
+}
+
 func TestValid_RejectsEmptyString(t *testing.T) {
 	if Valid("") {
 		t.Error("expected empty string to be rejected")

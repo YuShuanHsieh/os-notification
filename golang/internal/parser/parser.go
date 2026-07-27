@@ -10,10 +10,10 @@ package parser
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
+	"github.com/YuShuanHsieh/os-notification/golang/internal/httpsurl"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
 )
 
@@ -23,11 +23,11 @@ const MaxPayloadBytes = 32 * 1024
 // MaxJSONDepth is the deepest nesting of JSON objects/arrays accepted.
 const MaxJSONDepth = 16
 
-// maxImageURLLength mirrors the shared HTTPS URL policy (C# HttpsUrlPolicy /
-// Rust action_url::MAX_URL_LENGTH) applied to content.image.url at parse
-// time. Action URLs are not validated here -- that happens downstream at
-// render time in both reference implementations.
-const maxImageURLLength = 2048
+// maxImageURLLength mirrors the shared HTTPS URL policy's MaxURLLength
+// (internal/httpsurl), kept as an alias so existing tests referencing this
+// package-local name keep working. Action URLs are not validated here --
+// that happens downstream at render time in both reference implementations.
+const maxImageURLLength = httpsurl.MaxURLLength
 
 // wire* types mirror the inbound JSON shape (camelCase field names). Every
 // field is optional at the JSON level; required-ness is enforced by Parse
@@ -224,35 +224,11 @@ func parseImage(wire *wireImage) *model.Image {
 	if imgURL == "" {
 		return nil
 	}
-	if !isValidHTTPSImageURL(imgURL) {
+	if !httpsurl.Valid(imgURL) {
 		return nil
 	}
 	shape := model.ParseImageShape(strings.ToLower(wire.Shape))
 	return &model.Image{URL: imgURL, Shape: shape}
-}
-
-// isValidHTTPSImageURL ports the shared HTTPS URL policy (C#
-// HttpsUrlPolicy.TryCreate / Rust action_url::validate) as applied to
-// content.image.url: must be a well-formed absolute https URL, within the
-// length limit, with a non-empty host and no embedded userinfo.
-func isValidHTTPSImageURL(raw string) bool {
-	if len(raw) > maxImageURLLength {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() {
-		return false
-	}
-	if u.Scheme != "https" {
-		return false
-	}
-	if u.Hostname() == "" {
-		return false
-	}
-	if u.User != nil {
-		return false
-	}
-	return true
 }
 
 // depthExceeds is a string-aware structural scan of the raw JSON bytes that

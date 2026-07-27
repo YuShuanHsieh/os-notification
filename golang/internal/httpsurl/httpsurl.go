@@ -5,7 +5,10 @@
 // well-formed https:// URL with a real host and no embedded credentials.
 package httpsurl
 
-import "net/url"
+import (
+	"net/url"
+	"unicode/utf8"
+)
 
 // MaxURLLength is the maximum accepted length, in characters, of a raw URL
 // string per the shared contract (context/contracts-and-invariants.md).
@@ -13,9 +16,11 @@ const MaxURLLength = 2048
 
 // Valid reports whether rawURL is an absolute, well-formed https:// URL with
 // a non-empty host, no embedded user-info (no "user:pass@host" form), and
-// length <= MaxURLLength.
+// length <= MaxURLLength. Length is measured in characters (runes), not
+// bytes, per the shared contract -- a multi-byte-per-rune URL must not be
+// rejected earlier than an equivalent-length ASCII one.
 func Valid(rawURL string) bool {
-	if rawURL == "" || len(rawURL) > MaxURLLength {
+	if rawURL == "" || utf8.RuneCountInString(rawURL) > MaxURLLength {
 		return false
 	}
 
