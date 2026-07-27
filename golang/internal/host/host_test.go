@@ -13,7 +13,10 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/YuShuanHsieh/os-notification/golang/internal/aggregator"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/clock"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/dedup"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/identity"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/pipeline"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/toast"
 )
@@ -485,6 +488,42 @@ func TestStartLiveNATSReplaceableBatchSurvivorAckHasItsOwnAgentReceivedAt(t *tes
 	}
 	if len(calls[0].Sources) != 1 || calls[0].Sources[0].EventID != survivorID {
 		t.Fatalf("renderer.Show req.Sources = %+v, want exactly [%s]", calls[0].Sources, survivorID)
+	}
+}
+
+// TestHostDelegatesDropCountersToPipelineAndAggregator proves Host.
+// DroppedQueueFull/DroppedBucketOverflow correctly delegate to the
+// underlying pipeline/aggregator rather than tracking their own (possibly
+// stale) copy. Constructed directly (no live NATS needed) since this only
+// exercises the delegation, not the full Start/subscribe wiring.
+func TestHostDelegatesDropCountersToPipelineAndAggregator(t *testing.T) {
+	clk := clock.RealClock{}
+	dedupCache := dedup.NewCache(10, time.Minute, clk)
+	pl := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 2}, dedupCache, func(*model.InboundNotification) {}, clk)
+	// Run is deliberately never started: with nothing draining the queue,
+	// filling it to capacity and then overflowing is deterministic.
+	if !pl.TryEnqueue([]byte("a")) {
+		t.Fatal("1st TryEnqueue: got false, want true (within capacity)")
+	}
+	if pl.TryEnqueue([]byte("b")) {
+		t.Fatal("2nd TryEnqueue: got true, want false (queue full)")
+	}
+
+	agg := aggregator.New(aggregator.Options{MaxBuckets: 1}, clk, func([]*model.InboundNotification) {})
+	agg.Add(&model.InboundNotification{
+		Classification: model.Classification{Priority: model.PriorityNormal, AggregationKey: "a"},
+	})
+	agg.Add(&model.InboundNotification{
+		Classification: model.Classification{Priority: model.PriorityNormal, AggregationKey: "b"}, // 2nd distinct key: over MaxBuckets=1, dropped
+	})
+
+	h := &Host{pipeline: pl, agg: agg}
+
+	if got := h.DroppedQueueFull(); got != 1 {
+		t.Errorf("Host.DroppedQueueFull() = %d, want 1", got)
+	}
+	if got := h.DroppedBucketOverflow(); got != 1 {
+		t.Errorf("Host.DroppedBucketOverflow() = %d, want 1", got)
 	}
 }
 

@@ -179,6 +179,21 @@ func (h *Host) Subject() string {
 	return h.subject
 }
 
+// DroppedQueueFull returns the running count of raw payloads rejected by the
+// pipeline's intake queue because it was full, so an operator/future caller
+// can observe overload without reaching into the pipeline directly.
+func (h *Host) DroppedQueueFull() uint64 {
+	return h.pipeline.DroppedQueueFull()
+}
+
+// DroppedBucketOverflow returns the running count of events the aggregator
+// dropped because creating a new bucket for them would have exceeded
+// MaxBuckets, so an operator/future caller can observe overload without
+// reaching into the aggregator directly.
+func (h *Host) DroppedBucketOverflow() uint64 {
+	return h.agg.DroppedBucketOverflow()
+}
+
 // onObserved is the pipeline's OnObserved callback: fires once per valid,
 // first-seen event. It publishes observed_by_agent using the event's own
 // AgentReceivedAt (stamped by the pipeline at intake), then forwards the

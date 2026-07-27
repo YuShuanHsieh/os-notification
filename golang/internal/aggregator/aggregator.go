@@ -55,13 +55,18 @@ type Aggregator struct {
 	render  RenderFunc
 	buckets map[bucketKey]*bucket
 
-	// droppedBucketOverflow is not part of the public API (none of the
-	// reference implementations' *public* surface exposes it either — the
-	// Rust one does via a separate accessor, the C# one via a property, but
-	// neither is part of the shape AgentHost depends on here); it exists
-	// purely so a future caller/telemetry hook can be wired up without
-	// changing this struct's exported shape.
+	// droppedBucketOverflow counts events dropped because adding them would
+	// have required creating a bucket beyond MaxBuckets. Exposed via
+	// DroppedBucketOverflow below so a caller/telemetry hook can observe it.
 	droppedBucketOverflow uint64
+}
+
+// DroppedBucketOverflow returns the running count of events dropped because
+// creating a new bucket for them would have exceeded MaxBuckets.
+func (a *Aggregator) DroppedBucketOverflow() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.droppedBucketOverflow
 }
 
 // New constructs an Aggregator. render is called synchronously from whatever
