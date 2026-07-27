@@ -109,12 +109,6 @@ type Host struct {
 	subject    string
 	deviceID   string
 
-	// receivedAt remembers, per EventID, the agentReceivedAt timestamp
-	// captured in onObserved -- model.InboundNotification does not carry
-	// this itself, so it has to be threaded through out-of-band and picked
-	// back up when that event's batch renders.
-	receivedAt sync.Map // string -> time.Time
-
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -158,7 +152,7 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 
 	dedupCache := dedup.NewCache(d.dedupCapacity, d.dedupTTL, d.clk)
 	h.agg = aggregator.New(d.aggregatorOptions, d.clk, h.render)
-	h.pipeline = pipeline.New(d.pipelineOptions, dedupCache, h.onObserved)
+	h.pipeline = pipeline.New(d.pipelineOptions, dedupCache, h.onObserved, d.clk)
 
 	sub, err := nc.Subscribe(h.subject, func(msg *nats.Msg) {
 		h.pipeline.TryEnqueue(msg.Data)
@@ -186,18 +180,16 @@ func (h *Host) Subject() string {
 }
 
 // onObserved is the pipeline's OnObserved callback: fires once per valid,
-// first-seen event. It captures the event's agentReceivedAt, publishes
-// observed_by_agent, remembers agentReceivedAt for this EventID (read back
-// at render time), then forwards the event into the aggregator.
+// first-seen event. It publishes observed_by_agent using the event's own
+// AgentReceivedAt (stamped by the pipeline at intake), then forwards the
+// event into the aggregator.
 func (h *Host) onObserved(event *model.InboundNotification) {
-	now := h.clk.Now()
 	h.publishAck(telemetry.Ack{
 		EventID:         event.EventID,
 		DeviceID:        h.deviceID,
-		AgentReceivedAt: now,
+		AgentReceivedAt: event.AgentReceivedAt,
 		Status:          telemetry.StatusObservedByAgent,
 	})
-	h.receivedAt.Store(event.EventID, now)
 	h.agg.Add(event)
 }
 
@@ -205,9 +197,10 @@ func (h *Host) onObserved(event *model.InboundNotification) {
 // (immediately for critical/lone events, or when a bucket's window
 // elapses). It renders the batch as one toast and, only on success,
 // acknowledges submitted_to_windows for every event the batch represents --
-// each with its own agentReceivedAt but a shared toastSubmittedAt. A
-// rendering failure acknowledges nothing and is otherwise swallowed: a
-// single bad event/render must not crash the host (context/architecture.md).
+// each read straight off its own AgentReceivedAt (no side-tracking needed:
+// the event carries it) paired with a shared toastSubmittedAt. A rendering
+// failure acknowledges nothing and is otherwise swallowed: a single bad
+// event/render must not crash the host (context/architecture.md).
 func (h *Host) render(batch []*model.InboundNotification) {
 	req := toast.FromBatch(batch)
 
@@ -222,17 +215,11 @@ func (h *Host) render(batch []*model.InboundNotification) {
 	}
 
 	for _, event := range batch {
-		receivedAtVal, ok := h.receivedAt.LoadAndDelete(event.EventID)
-		if !ok {
-			// Should not happen given onObserved always stores before
-			// Add(); skip rather than guess at a timestamp.
-			continue
-		}
 		ts := submittedAt
 		h.publishAck(telemetry.Ack{
 			EventID:          event.EventID,
 			DeviceID:         h.deviceID,
-			AgentReceivedAt:  receivedAtVal.(time.Time),
+			AgentReceivedAt:  event.AgentReceivedAt,
 			ToastSubmittedAt: &ts,
 			Status:           telemetry.StatusSubmittedToWindows,
 		})

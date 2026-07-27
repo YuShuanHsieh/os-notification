@@ -382,6 +382,112 @@ func TestStartLiveNATSBatchAckFanout(t *testing.T) {
 	}
 }
 
+// TestStartLiveNATSReplaceableBatchSurvivorAckHasItsOwnAgentReceivedAt is a
+// regression test for the fixed AgentReceivedAt-tracking leak: it exercises
+// the steady-state "replaceable/progress" pattern (three replaceable events
+// in the same bucket, each superseding the last) that used to orphan a
+// receivedAt map entry per discarded event, and proves the surviving event's
+// submitted_to_windows ack carries its own AgentReceivedAt -- not some
+// earlier discarded event's -- now that the timestamp travels on the event
+// itself instead of through a side map keyed by EventID.
+func TestStartLiveNATSReplaceableBatchSurvivorAckHasItsOwnAgentReceivedAt(t *testing.T) {
+	requireLiveNATS(t)
+
+	userID := "u-" + uniqueID(t)
+	ackSubject := "notify.ack.test." + uniqueID(t)
+	opts := Options{
+		NatsURL:         natsTestURL,
+		SubjectTemplate: "notify.user.%s.desktop",
+		AckSubject:      ackSubject,
+	}
+	idp := fixedIdentity{id: identity.Identity{UserID: userID, DeviceID: "d-test"}}
+	renderer := &recordingRenderer{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d := defaultDeps()
+	d.aggregatorOptions = aggregator.Options{
+		MaxBuckets:      100,
+		ImportantWindow: 2 * time.Second,
+		NormalWindow:    500 * time.Millisecond,
+	}
+	d.pipelineOptions = pipeline.Options{QueueCapacity: 500, WorkerCount: 2}
+
+	h, err := start(ctx, opts, idp, renderer, nil, d)
+	if err != nil {
+		t.Fatalf("start() error = %v", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = h.Shutdown(shutdownCtx)
+	}()
+	if err := h.nc.Flush(); err != nil {
+		t.Fatalf("flush host subscription: %v", err)
+	}
+
+	obsNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (observer): %v", err)
+	}
+	defer obsNC.Close()
+	acks := newAckCollector(collectAcks(t, obsNC, ackSubject))
+
+	pubNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (publisher): %v", err)
+	}
+	defer pubNC.Close()
+
+	const aggKey = "progress-agg"
+	base := "evt-" + uniqueID(t)
+	eventIDs := []string{base + "-p1", base + "-p2", base + "-p3"}
+	for i, id := range eventIDs {
+		body := wireEvent(id, userID, fmt.Sprintf("Progress %d", i), fmt.Sprintf("%d%%", (i+1)*30), "normal", aggKey, true)
+		if err := pubNC.Publish(h.Subject(), body); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		// Small, deliberate gap so each event gets a distinguishably later
+		// AgentReceivedAt -- without this, all three could land in the same
+		// timestamp tick and the assertion below would pass vacuously.
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := pubNC.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	// Every event is observed individually, before any bucketing/collapsing.
+	observedTS := make(map[string]time.Time, len(eventIDs))
+	for _, id := range eventIDs {
+		a := acks.waitFor(t, id, "observed_by_agent", 5*time.Second)
+		observedTS[id] = a.AgentReceivedAt
+	}
+	// Distinct timestamps for each event, proving they aren't sharing state.
+	if observedTS[eventIDs[0]].Equal(observedTS[eventIDs[2]]) {
+		t.Fatalf("expected p1 and p3 to have distinct AgentReceivedAt timestamps, both were %v", observedTS[eventIDs[0]])
+	}
+
+	survivorID := eventIDs[2] // p3: replaceable collapsing keeps only the latest
+	submittedAck := acks.waitFor(t, survivorID, "submitted_to_windows", 5*time.Second)
+
+	if !submittedAck.AgentReceivedAt.Equal(observedTS[survivorID]) {
+		t.Fatalf("survivor submitted_to_windows ack: AgentReceivedAt = %v, want %v (its own observed_by_agent timestamp, not an earlier discarded event's)",
+			submittedAck.AgentReceivedAt, observedTS[survivorID])
+	}
+
+	// The whole point of replaceable collapsing: exactly one render call, for
+	// exactly the survivor -- p1/p2 never render (and so never get a
+	// submitted_to_windows ack at all).
+	calls := renderer.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("renderer.Show call count = %d, want 1 (replaceable collapse)", len(calls))
+	}
+	if len(calls[0].Sources) != 1 || calls[0].Sources[0].EventID != survivorID {
+		t.Fatalf("renderer.Show req.Sources = %+v, want exactly [%s]", calls[0].Sources, survivorID)
+	}
+}
+
 func TestOptionsFromEnvDefaults(t *testing.T) {
 	t.Setenv("NOTIFY_NATS_URL", "")
 	t.Setenv("NOTIFY_SUBJECT_TEMPLATE", "")

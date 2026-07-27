@@ -16,7 +16,9 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/YuShuanHsieh/os-notification/golang/internal/clock"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/dedup"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/parser"
@@ -40,38 +42,55 @@ type Options struct {
 // synchronization.
 type OnObserved func(event *model.InboundNotification)
 
+// queueItem pairs a raw payload with the timestamp it was accepted at --
+// captured in TryEnqueue, at the moment the raw payload is accepted from
+// NATS, so that it reflects true receipt time rather than whenever a worker
+// eventually gets around to processing it. This is an internal
+// implementation detail; it does not appear in any public signature.
+type queueItem struct {
+	payload    []byte
+	receivedAt time.Time
+}
+
 // Pipeline is a bounded intake queue with a fixed worker pool. Overload drops
 // payloads at the queue boundary -- memory stays bounded, delivery stays
 // best-effort, and every drop is counted via DroppedQueueFull.
 type Pipeline struct {
 	opts       Options
-	queue      chan []byte
+	queue      chan queueItem
 	dedupCache *dedup.Cache
 	onObserved OnObserved
+	clk        clock.Clock
 
 	droppedQueueFull atomic.Uint64
 }
 
 // New constructs a Pipeline. dedupCache suppresses duplicates by
-// deduplicationKey before OnObserved fires.
-func New(opts Options, dedupCache *dedup.Cache, onObserved OnObserved) *Pipeline {
+// deduplicationKey before OnObserved fires. clk is the time source used to
+// stamp each payload's AgentReceivedAt at TryEnqueue time.
+func New(opts Options, dedupCache *dedup.Cache, onObserved OnObserved, clk clock.Clock) *Pipeline {
 	return &Pipeline{
 		opts:       opts,
-		queue:      make(chan []byte, opts.QueueCapacity),
+		queue:      make(chan queueItem, opts.QueueCapacity),
 		dedupCache: dedupCache,
 		onObserved: onObserved,
+		clk:        clk,
 	}
 }
 
 // TryEnqueue accepts one raw inbound payload (as received from NATS) into the
-// bounded intake queue. Returns false if the queue is currently full -- the
-// payload is dropped without being parsed, and the caller should count this
-// as a dropped-queue-full event (exposed via DroppedQueueFull() below).
-// Returns true if it was accepted into the queue (not a guarantee it will
-// pass parsing/dedup -- that happens asynchronously in a worker).
+// bounded intake queue, stamping it with the current time (per this
+// Pipeline's clock) as its AgentReceivedAt -- captured here, at intake,
+// rather than later when a worker happens to dequeue it. Returns false if
+// the queue is currently full -- the payload is dropped without being
+// parsed, and the caller should count this as a dropped-queue-full event
+// (exposed via DroppedQueueFull() below). Returns true if it was accepted
+// into the queue (not a guarantee it will pass parsing/dedup -- that happens
+// asynchronously in a worker).
 func (p *Pipeline) TryEnqueue(payload []byte) bool {
+	item := queueItem{payload: payload, receivedAt: p.clk.Now()}
 	select {
-	case p.queue <- payload:
+	case p.queue <- item:
 		return true
 	default:
 		p.droppedQueueFull.Add(1)
@@ -111,8 +130,8 @@ func (p *Pipeline) workerLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case payload := <-p.queue:
-			p.process(payload)
+		case item := <-p.queue:
+			p.process(item)
 		}
 	}
 }
@@ -120,13 +139,14 @@ func (p *Pipeline) workerLoop(ctx context.Context) {
 // process parses and dedups a single payload, invoking onObserved for every
 // valid first-seen event. Parse errors and duplicates are dropped silently
 // -- one poison payload must never crash a worker.
-func (p *Pipeline) process(payload []byte) {
-	evt, err := parser.Parse(payload)
+func (p *Pipeline) process(item queueItem) {
+	evt, err := parser.Parse(item.payload)
 	if err != nil {
 		return
 	}
 	if p.dedupCache.SeenOrAdd(evt.Classification.DeduplicationKey) {
 		return
 	}
+	evt.AgentReceivedAt = item.receivedAt
 	p.onObserved(evt)
 }

@@ -92,7 +92,7 @@ func runAndWaitStop(t *testing.T, p *pipeline.Pipeline) (ctx context.Context, st
 
 func TestValidPayloadTriggersOnObservedOnceWithParsedEvent(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
 
 	_, stop := runAndWaitStop(t, p)
 	defer stop()
@@ -133,7 +133,7 @@ func TestValidPayloadTriggersOnObservedOnceWithParsedEvent(t *testing.T) {
 
 func TestInvalidPayloadNeverTriggersOnObservedAndWorkerSurvives(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
 
 	_, stop := runAndWaitStop(t, p)
 	defer stop()
@@ -157,7 +157,7 @@ func TestInvalidPayloadNeverTriggersOnObservedAndWorkerSurvives(t *testing.T) {
 
 func TestDuplicateDeduplicationKeyTriggersOnObservedOnce(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
 
 	_, stop := runAndWaitStop(t, p)
 	defer stop()
@@ -178,7 +178,7 @@ func TestDuplicateDeduplicationKeyTriggersOnObservedOnce(t *testing.T) {
 
 func TestTryEnqueueRejectsWhenQueueFullWithoutRun(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 2, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+	p := pipeline.New(pipeline.Options{QueueCapacity: 2, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
 
 	// Run is never started, so nothing drains the intake queue.
 	if !p.TryEnqueue(criticalPayload("e1")) {
@@ -206,7 +206,7 @@ func TestTryEnqueueRejectsWhenQueueFullWithoutRun(t *testing.T) {
 
 func TestRunReturnsPromptlyOnContextCancelWithoutLeakingGoroutines(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved)
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -221,5 +221,54 @@ func TestRunReturnsPromptlyOnContextCancelWithoutLeakingGoroutines(t *testing.T)
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("pipeline.Run did not return after context cancellation (goroutine leak?)")
+	}
+}
+
+// TestTryEnqueueStampsAgentReceivedAtAtIntakeNotAtWorkerProcessingTime proves
+// the fix for the AgentReceivedAt-timing bug: the timestamp on the parsed
+// event must reflect when TryEnqueue accepted the payload, not whenever a
+// worker later happens to dequeue and process it. A single-worker pipeline
+// with a FakeClock (advanced between two TryEnqueue calls, before Run ever
+// starts draining the queue) makes this observable deterministically.
+func TestTryEnqueueStampsAgentReceivedAtAtIntakeNotAtWorkerProcessingTime(t *testing.T) {
+	clk := clock.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 1}, newDedupCache(), rec.onObserved, clk)
+
+	t0 := clk.Now()
+	if !p.TryEnqueue(criticalPayload("evt-early")) {
+		t.Fatal("TryEnqueue(evt-early) returned false, want true")
+	}
+	clk.Advance(5 * time.Second)
+	t1 := clk.Now()
+	if !p.TryEnqueue(criticalPayload("evt-late")) {
+		t.Fatal("TryEnqueue(evt-late) returned false, want true")
+	}
+
+	// Only now does anything start draining the queue -- if AgentReceivedAt
+	// were captured at worker-processing time instead of at TryEnqueue time,
+	// both events would incorrectly share this later timestamp.
+	_, stop := runAndWaitStop(t, p)
+	defer stop()
+
+	waitUntil(t, 2*time.Second, func() bool { return rec.count() == 2 })
+
+	byID := make(map[string]*model.InboundNotification)
+	for _, e := range rec.snapshot() {
+		byID[e.EventID] = e
+	}
+	early, ok := byID["evt-early"]
+	if !ok {
+		t.Fatal("evt-early was never observed")
+	}
+	late, ok := byID["evt-late"]
+	if !ok {
+		t.Fatal("evt-late was never observed")
+	}
+	if !early.AgentReceivedAt.Equal(t0) {
+		t.Errorf("evt-early.AgentReceivedAt = %v, want %v (time of its TryEnqueue call)", early.AgentReceivedAt, t0)
+	}
+	if !late.AgentReceivedAt.Equal(t1) {
+		t.Errorf("evt-late.AgentReceivedAt = %v, want %v (time of its TryEnqueue call)", late.AgentReceivedAt, t1)
 	}
 }

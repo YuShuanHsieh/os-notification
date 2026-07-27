@@ -96,4 +96,13 @@ type InboundNotification struct {
 	Classification    Classification
 	ProducerCreatedAt time.Time
 	ServerPublishedAt time.Time
+
+	// AgentReceivedAt is the time the raw wire payload was accepted for
+	// processing (captured at NATS message intake, before the bounded queue,
+	// parsing, or dedup) -- analogous to C#'s ReceivedEvent.ReceivedAt and
+	// Rust's ReceivedEvent.received_at. Carrying this on the event itself
+	// (rather than tracking it out-of-band, keyed by EventID, in a side map)
+	// is what lets every downstream stage read it directly instead of
+	// needing to remember and later clean up per-event state.
+	AgentReceivedAt time.Time
 }
