@@ -13,6 +13,10 @@
 | `rust/notify-agent-core` | Cross-platform Rust pipeline, identity, NATS host, auth, and toast contracts | `async-nats`, Tokio |
 | `rust/notify-agent-console` | Rust Linux/development head and console renderer | Rust Core |
 | `rust/notify-agent-windows` | Rust Windows head, WinRT toast renderer, image cache, and system tray | Rust Core, Windows APIs |
+| `golang/internal/*` | Cross-platform Go pipeline, identity, NATS host, auth, image cache, and toast contracts | `nats.go` |
+| `golang/cmd/notify-agent-console` | Go Linux/development head and console renderer | Go Core packages |
+| `golang/cmd/notify-agent-windows` | Go Windows head: PowerShell-submitted WinRT toast XML, AUMID registration, and `systray`-based tray icon | Go Core packages, `golang.org/x/sys/windows`, `getlantern/systray`, `powershell.exe` |
+| `golang/cmd/test-publisher` | Publishes sample events and observes acknowledgements (Go port) | `nats.go` |
 
 The solution file includes Core, Core.Tests, ConsoleHost, and TestPublisher. The
 Windows application and Windows tests are intentionally built separately so the
@@ -63,6 +67,24 @@ default solution remains cross-platform.
   menu, startup-failure tooltip, and message loop.
 - `rust/notify-agent-core/src/image_cache.rs` performs bounded, HTTPS-only
   best-effort image caching for Rust Windows toasts.
+
+## Go ownership
+
+- `golang/internal/host/host.go` is the Go composition root (`Start`/`Shutdown`)
+  and accepts an optional `natsauth.Provider`.
+- `golang/internal/parser`, `pipeline`, `aggregator`, and `dedup` own the
+  bounded wire-processing pipeline; `toast` and `windowstoast` own
+  renderer-neutral and Windows XML toast shaping.
+- `golang/internal/natsauth` owns the credentials-file auth provider contract
+  (no external-auth-service provider yet). `golang/internal/identity` owns
+  environment-only identity (no AAD/MSAL/device-code flow yet).
+- `golang/cmd/notify-agent-windows/main.go` and `tray.go` own Windows startup,
+  single-instance enforcement, and the `systray`-based tray icon/menu/close
+  lifecycle. `renderer.go` submits toast XML by shelling out to
+  `powershell.exe` (no native WinRT bindings). `aumid.go` owns AUMID
+  registration and process identity.
+- `golang/internal/imagecache` performs bounded, HTTPS-only best-effort image
+  caching for Go Windows toasts.
 
 ## Historical material
 

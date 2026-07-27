@@ -4,7 +4,7 @@
 
 This repository is the desktop consumer for user-scoped notifications. A backend
 publisher is out of scope; `tools/TestPublisher` is a development substitute. The
-C# and Rust agents share the same wire contracts and use plain Core NATS, so
+C#, Rust, and Go agents share the same wire contracts and use plain Core NATS, so
 delivery is online-only, at-most-once, and best-effort: there is no durable
 stream, replay, or offline recovery.
 
@@ -24,10 +24,12 @@ Core NATS: notify.user.{userId}.desktop
   -> Core NATS: notify.ack.desktop
 ```
 
-`AgentHost` is the composition root in both implementations. It resolves identity,
-opens NATS, constructs the cache/pipeline/aggregator, and owns subscription and
-disposal. Start tracing at `src/NotificationAgent.Core/Hosting/AgentHost.cs` for
-C# or `rust/notify-agent-core/src/host.rs` for Rust.
+`AgentHost` is the composition root in all three implementations. It resolves
+identity, opens NATS, constructs the cache/pipeline/aggregator, and owns
+subscription and disposal. Start tracing at
+`src/NotificationAgent.Core/Hosting/AgentHost.cs` for C#,
+`rust/notify-agent-core/src/host.rs` for Rust, or `golang/internal/host/host.go`
+for Go.
 
 ## Processing stages
 
@@ -61,6 +63,10 @@ Rust Console --------> Rust Core <-------- Rust Windows
                          ^
                     Rust Core tests
 
+Go Console -----------> Go Core <---------- Go Windows
+                         ^
+                    Go internal tests
+
 TestPublisher (standalone NATS development tool)
 ```
 
@@ -84,3 +90,17 @@ through `IIdentityProvider`.
 - Rust tray implementation details live in
   `rust/notify-agent-windows/src/tray.rs`; its UI behavior requires a live Windows
   desktop smoke test.
+- The Go Windows head is architecturally distinct from both other Windows heads:
+  it has no native WinRT bindings, so `golang/cmd/notify-agent-windows/renderer.go`
+  builds the same toast XML (`golang/internal/windowstoast`) and submits it by
+  shelling out to `powershell.exe -EncodedCommand`, which loads
+  `Windows.UI.Notifications.ToastNotificationManager` via PowerShell's
+  WindowsRuntime `ContentType` accelerator (the same mechanism the BurntToast
+  module uses) rather than calling a native projection directly. The tray icon
+  itself uses `github.com/getlantern/systray` (`golang/cmd/notify-agent-windows/tray.go`)
+  for the immediate-icon/version-menu/bounded-graceful-close lifecycle, matching
+  the same tray design as the C# and Rust heads.
+- Go tray and PowerShell-submission implementation details live in
+  `golang/cmd/notify-agent-windows/tray.go` and `renderer.go`; both require a
+  live Windows desktop smoke test since cross-compilation success does not
+  exercise either path.

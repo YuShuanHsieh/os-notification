@@ -4,22 +4,31 @@
 
 | Variable | Default | Consumer |
 |---|---|---|
-| `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | Both agents and TestPublisher; Rust also accepts `ws://`/`wss://` |
-| `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | Agent hosts |
+| `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | All three agents and TestPublisher; Rust also accepts `ws://`/`wss://` |
+| `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | Agent hosts (Go uses Go's `%s` placeholder instead of `{0}`, same default subject) |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | Agent hosts and TestPublisher |
-| `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | Both hosts: path to a NATS `.creds` file |
-| `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | Windows: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
-| `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | Windows: AAD scope requested when calling the auth service |
-| `NOTIFY_USER_ID` | Required for environment identity | ConsoleHost; Windows fallback identity |
+| `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | All hosts: path to a NATS `.creds` file |
+| `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | C#/Rust Windows only: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
+| `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | C#/Rust Windows only: AAD scope requested when calling the auth service |
+| `NOTIFY_USER_ID` | Required for environment identity | ConsoleHost; Windows fallback identity (Go: the only identity source) |
 | `NOTIFY_DEVICE_ID` | `d-{lowercase machine name}` | Environment identity |
-| `NOTIFY_AAD_CLIENT_ID` | Unset | Windows; when set, selects MSAL/WAM identity |
-| `NOTIFY_AAD_TENANT_ID` | `organizations` | Windows MSAL identity |
+| `NOTIFY_AAD_CLIENT_ID` | Unset | C#/Rust Windows only; when set, selects MSAL/WAM (C#) or device-code (Rust) identity |
+| `NOTIFY_AAD_TENANT_ID` | `organizations` | C#/Rust Windows MSAL/device-code identity |
 
 `AgentOptions.FromEnvironment` owns transport configuration.
 `EnvironmentIdentityProvider` owns development identity configuration. The Windows
 entry point owns selection between environment and MSAL identity. The Rust Windows
 entry point uses environment identity unless `NOTIFY_AAD_CLIENT_ID` selects its
 device-code identity flow.
+
+The Go port (`golang/internal/host.OptionsFromEnv`, `golang/internal/identity.EnvIdentity`)
+currently has a narrower scope than the other two implementations, and this is
+accepted/documented rather than a gap to close incidentally: identity is
+environment-only (`NOTIFY_USER_ID`/`NOTIFY_DEVICE_ID`, no AAD/MSAL/device-code
+sign-in), and NATS auth is creds-file-only (`golang/internal/natsauth.CredsFileAuth`,
+no external-auth-service provider). `NOTIFY_AAD_CLIENT_ID`,
+`NOTIFY_AAD_TENANT_ID`, `NOTIFY_NATS_AUTH_SERVICE_URL`, and
+`NOTIFY_NATS_AUTH_SERVICE_SCOPE` are not consumed by the Go agent.
 
 One detail to preserve: `TestPublisher` currently constructs
 `notify.user.{userId}.desktop` directly; it does not consume
@@ -69,6 +78,18 @@ selection between them at startup.
   workflow vendors dependencies so the release build can run with network access
   disabled; see `rust/docker/windows-cross.Dockerfile` and
   `rust/scripts/build-windows-docker.sh`.
+- The Go Windows head (`golang/cmd/notify-agent-windows`) is also a tray
+  application rather than a headless process, using
+  `github.com/getlantern/systray` for the icon/version/Close menu with the same
+  immediate-icon and bounded-graceful-then-forced-close lifecycle as the C# and
+  Rust heads. It has no native WinRT toast bindings: `renderer.go` builds toast
+  XML (`golang/internal/windowstoast`) and submits it by invoking
+  `powershell.exe -EncodedCommand`, which loads
+  `Windows.UI.Notifications.ToastNotificationManager` via PowerShell's
+  WindowsRuntime `ContentType` accelerator.
+- Go Windows builds cross-compile from Linux with a plain
+  `GOOS=windows GOARCH=amd64 go build`; unlike the Rust head, there is no cgo
+  dependency here, so no mingw or other cross-toolchain is required.
 
 ## Operational caveats
 
