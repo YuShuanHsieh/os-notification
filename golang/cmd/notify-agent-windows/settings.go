@@ -1,0 +1,146 @@
+// Settings-file support for the Windows head: an operator-configurable JSON
+// file that supplies base configuration so a deployed agent doesn't have to
+// be launched with environment variables set. Environment variables still
+// win when set (see Resolve* below) -- the file only fills in what the
+// environment doesn't specify.
+//
+// This file has no `//go:build windows` constraint, unlike settings_windows.go
+// (which resolves the real %LOCALAPPDATA%-based file path): the JSON
+// parsing and precedence logic here does nothing OS-specific, so it stays
+// unit-testable on any platform, same as toastscript.go's split for the
+// PowerShell script builder.
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+
+	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/loglevel"
+)
+
+// Settings is the on-disk shape of settings.json. Every field is optional;
+// a field that is absent or blank is treated as "not configured" here, the
+// same way EnvIdentity/host.OptionsFromEnv treat an unset/blank environment
+// variable. This intentionally only covers the fields the Go Windows head
+// actually acts on -- it has no AAD/device-code identity and no
+// external-auth-service NATS auth mode (see README.md "Known gaps"), so
+// unlike C#/Rust's settings surface, there is no field for either here.
+type Settings struct {
+	NatsURL         string `json:"natsUrl"`
+	SubjectTemplate string `json:"subjectTemplate"`
+	AckSubject      string `json:"ackSubject"`
+	NatsCredsFile   string `json:"natsCredsFile"`
+	DeviceID        string `json:"deviceId"`
+	LogLevel        string `json:"logLevel"`
+}
+
+// ParseSettings parses raw settings.json bytes into a Settings value.
+func ParseSettings(data []byte) (Settings, error) {
+	var s Settings
+	if err := json.Unmarshal(data, &s); err != nil {
+		return Settings{}, fmt.Errorf("parse settings json: %w", err)
+	}
+	return s, nil
+}
+
+// LoadSettingsFile reads and parses the settings file at path. It never
+// returns an error to the caller -- a missing file, an unreadable file, and
+// malformed JSON all fall back to a zero Settings{} (i.e. every field
+// "not configured", so ResolveHostOptions/ResolveCredsFile/ResolveDeviceID/
+// ResolveLogLevel fall through to their own defaults) plus a logged
+// message, never a startup failure. A missing file logs at Debug (the
+// common, expected case when no settings file has been deployed yet); an
+// existing-but-unreadable-or-malformed file logs at Warn, since that more
+// likely reflects an operator mistake worth noticing.
+func LoadSettingsFile(path string) (Settings, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Debug("settings file not found, using defaults", "path", path)
+		} else {
+			slog.Warn("settings file could not be read, using defaults", "path", path, "error", err)
+		}
+		return Settings{}, false
+	}
+
+	s, err := ParseSettings(data)
+	if err != nil {
+		slog.Warn("settings file could not be parsed, using defaults", "path", path, "error", err)
+		return Settings{}, false
+	}
+	return s, true
+}
+
+// isBlank reports whether s is empty or contains only whitespace, matching
+// the "blank means unset" treatment used throughout this port
+// (host.getEnvOr, identity.EnvIdentity).
+func isBlank(s string) bool {
+	return strings.TrimSpace(s) == ""
+}
+
+// ResolveHostOptions layers Settings-file values under envOpts (an already
+// environment-resolved host.Options, e.g. host.OptionsFromEnv()'s result),
+// per the documented precedence: environment variable (if set and
+// non-blank) > settings file value (if present and non-blank) > built-in
+// default. Because envOpts already carries "env-value-or-default" per
+// field, this only needs to know whether the *environment* actually set
+// each field (via getenv) to decide whether the settings file is allowed to
+// override the default that's currently sitting in envOpts. getenv is
+// injected so this stays testable without mutating process environment
+// (production callers pass os.Getenv).
+func ResolveHostOptions(getenv func(string) string, envOpts host.Options, s Settings) host.Options {
+	result := envOpts
+	if isBlank(getenv("NOTIFY_NATS_URL")) && !isBlank(s.NatsURL) {
+		result.NatsURL = s.NatsURL
+	}
+	if isBlank(getenv("NOTIFY_SUBJECT_TEMPLATE")) && !isBlank(s.SubjectTemplate) {
+		result.SubjectTemplate = s.SubjectTemplate
+	}
+	if isBlank(getenv("NOTIFY_ACK_SUBJECT")) && !isBlank(s.AckSubject) {
+		result.AckSubject = s.AckSubject
+	}
+	return result
+}
+
+// ResolveCredsFile applies the same env-then-file precedence to the NATS
+// creds file path. A blank result means "no auth", same as today.
+func ResolveCredsFile(getenv func(string) string, s Settings) string {
+	if v := getenv("NOTIFY_NATS_CREDS_FILE"); !isBlank(v) {
+		return v
+	}
+	return s.NatsCredsFile
+}
+
+// ResolveDeviceID applies the same env-then-file precedence to the device
+// ID override. A blank result means "no override" -- the caller (the
+// Windows identity provider) falls back to its own hostname-derived
+// default.
+func ResolveDeviceID(getenv func(string) string, s Settings) string {
+	if v := getenv("NOTIFY_DEVICE_ID"); !isBlank(v) {
+		return v
+	}
+	return s.DeviceID
+}
+
+// defaultLogLevel is the level used when neither NOTIFY_LOG_LEVEL nor the
+// settings file's logLevel field parse to a recognized value.
+const defaultLogLevel = slog.LevelInfo
+
+// ResolveLogLevel applies the same env-then-file precedence to the log
+// level, parsing the winning value via internal/loglevel. An unparseable or
+// blank value at one tier falls through to the next; if nothing parses, it
+// defaults to defaultLogLevel.
+func ResolveLogLevel(getenv func(string) string, s Settings) slog.Level {
+	if lvl, ok := loglevel.Parse(getenv("NOTIFY_LOG_LEVEL")); ok {
+		return lvl
+	}
+	if lvl, ok := loglevel.Parse(s.LogLevel); ok {
+		return lvl
+	}
+	return defaultLogLevel
+}

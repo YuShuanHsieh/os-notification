@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/identity"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/loglevel"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/natsauth"
 )
 
@@ -24,6 +26,19 @@ func main() {
 }
 
 func run() int {
+	// Set up the default slog logger before anything else, matching
+	// notify-agent-windows's convention: NOTIFY_LOG_LEVEL (default "info").
+	// This head has no settings file (Windows-only, see Feature 2), so
+	// this is env-only, one tier simpler than the Windows head's
+	// env-then-file-then-default precedence.
+	level := slog.LevelInfo
+	if lvl, ok := loglevel.Parse(os.Getenv("NOTIFY_LOG_LEVEL")); ok {
+		level = lvl
+	}
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(level)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: levelVar})))
+
 	opts := host.OptionsFromEnv()
 
 	var authProvider natsauth.Provider

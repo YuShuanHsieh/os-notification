@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/getlantern/systray"
@@ -36,6 +37,16 @@ func main() {
 }
 
 func run() int {
+	// Load the Feature-2 settings file (best-effort: a missing or malformed
+	// file falls back to defaults, logged, never a startup failure) before
+	// anything else, since its logLevel field feeds the logger set up right
+	// after -- everything logged from here on should honor it.
+	settings, _ := LoadSettingsFile(defaultSettingsFilePath())
+
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(ResolveLogLevel(os.Getenv, settings))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: levelVar})))
+
 	alreadyRunning, err := acquireSingleInstance()
 	if err != nil {
 		// Fail closed: an inconclusive single-instance check must not be
@@ -60,7 +71,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "notify-agent-windows: warning: %v\n", err)
 	}
 
-	app := &trayApp{}
+	app := &trayApp{settings: settings}
 	systray.Run(app.onReady, app.onExit)
 	return 0
 }
