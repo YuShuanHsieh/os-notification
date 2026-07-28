@@ -10,6 +10,7 @@
 package aggregator
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -188,7 +189,9 @@ func (a *Aggregator) Flush() {
 // contract (context/architecture.md).
 func (a *Aggregator) safeRender(batch []*model.InboundNotification) {
 	defer func() {
-		_ = recover()
+		if r := recover(); r != nil {
+			log.Printf("aggregator: recovered from panic while rendering batch: %v", r)
+		}
 	}()
 	a.render(batch)
 }

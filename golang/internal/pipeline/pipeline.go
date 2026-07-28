@@ -14,6 +14,7 @@ package pipeline
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -145,7 +146,9 @@ func (p *Pipeline) workerLoop(ctx context.Context) {
 // bad event cannot terminate the agent").
 func (p *Pipeline) process(item queueItem) {
 	defer func() {
-		_ = recover()
+		if r := recover(); r != nil {
+			log.Printf("pipeline: recovered from panic while processing event: %v", r)
+		}
 	}()
 
 	evt, err := parser.Parse(item.payload)
