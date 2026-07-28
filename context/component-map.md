@@ -61,10 +61,19 @@ default solution remains cross-platform.
   `toast_xml.rs` own renderer-neutral and Windows XML toast shaping.
 - `rust/notify-agent-core/src/nats_auth.rs` owns credentials-file and external
   auth-service provider contracts. `identity.rs` owns environment and device-code
-  identity plus AAD token refresh.
+  identity plus AAD token refresh (`EnvIdentity`/`NOTIFY_USER_ID` here is shared
+  with the console head and unaffected by the Windows head's own default
+  identity below).
 - `rust/notify-agent-windows/src/main.rs` owns Windows startup, identity/auth
   selection, and the async runtime. `tray.rs` owns the tray icon, version/Close
-  menu, startup-failure tooltip, and message loop.
+  menu, startup-failure tooltip, and message loop. `settings.rs` owns the
+  optional `%LOCALAPPDATA%\DesktopNotificationAgent\settings.json` file
+  (parsing, env-over-file-over-default precedence, and the `logLevel` ->
+  `tracing_subscriber::EnvFilter` mapping). `windows_identity.rs` owns the
+  default Windows-username-derived identity (`WindowsUsernameIdentity`) used
+  when `NOTIFY_AAD_CLIENT_ID` isn't set — a deliberate, documented exception to
+  Core's "OS account name is never identity" principle, scoped to this head;
+  see `contracts-and-invariants.md`.
 - `rust/notify-agent-core/src/image_cache.rs` performs bounded, HTTPS-only
   best-effort image caching for Rust Windows toasts.
 
