@@ -44,28 +44,44 @@ pub struct Settings {
     pub log_level: Option<String>,
 }
 
-/// Parses settings JSON. Malformed input logs a warning and returns `None`;
-/// callers fall back to `Settings::default()`.
-pub fn parse(json: &str) -> Option<Settings> {
-    match serde_json::from_str(json) {
-        Ok(settings) => Some(settings),
-        Err(error) => {
-            tracing::warn!(%error, "settings file: malformed JSON, falling back to defaults");
-            None
-        }
-    }
+/// Parses settings JSON. Malformed input yields `Err` with a diagnostic
+/// message describing the problem; callers fall back to
+/// `Settings::default()`.
+///
+/// Returns a plain `Result<Settings, String>` rather than logging directly:
+/// this runs during `load()`/`load_from_path()`, which in turn run in
+/// `main.rs` *before* the `tracing` subscriber is installed (the log filter
+/// itself can come from the settings file being loaded here — a
+/// chicken-and-egg problem). A `tracing::warn!` call made before any
+/// subscriber exists is silently dropped, so diagnostics are returned as
+/// data instead and logged by the caller once a subscriber is up (see
+/// `main.rs`).
+pub fn parse(json: &str) -> Result<Settings, String> {
+    serde_json::from_str(json).map_err(|error| {
+        format!("settings file: malformed JSON, falling back to defaults: {error}")
+    })
 }
 
 /// Reads and parses the settings file at `path`. Any failure — missing file,
 /// unreadable, malformed JSON — yields `Settings::default()`; never panics.
-pub fn load_from_path(path: &std::path::Path) -> Settings {
+/// Diagnostics describing any non-fatal failure are returned alongside the
+/// settings rather than logged here (see `parse`'s doc comment for why).
+pub fn load_from_path(path: &std::path::Path) -> (Settings, Vec<String>) {
     match std::fs::read_to_string(path) {
-        Ok(contents) => parse(&contents).unwrap_or_default(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Settings::default(),
-        Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "settings file: could not read, falling back to defaults");
-            Settings::default()
+        Ok(contents) => match parse(&contents) {
+            Ok(settings) => (settings, Vec::new()),
+            Err(message) => (Settings::default(), vec![message]),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (Settings::default(), Vec::new())
         }
+        Err(error) => (
+            Settings::default(),
+            vec![format!(
+                "settings file: could not read {}, falling back to defaults: {error}",
+                path.display()
+            )],
+        ),
     }
 }
 
@@ -77,16 +93,20 @@ pub fn default_path() -> anyhow::Result<std::path::PathBuf> {
         .join("settings.json"))
 }
 
-/// Loads settings from the default per-user location, warning and falling
-/// back to defaults if `LOCALAPPDATA` isn't set (rather than failing
-/// startup).
-pub fn load() -> Settings {
+/// Loads settings from the default per-user location, falling back to
+/// defaults if `LOCALAPPDATA` isn't set (rather than failing startup).
+/// Returns any diagnostic messages alongside the settings so the caller can
+/// log them once a `tracing` subscriber is installed (see `parse`'s doc
+/// comment for why this doesn't log directly).
+pub fn load() -> (Settings, Vec<String>) {
     match default_path() {
         Ok(path) => load_from_path(&path),
-        Err(error) => {
-            tracing::warn!(%error, "settings file: LOCALAPPDATA not set, using defaults");
-            Settings::default()
-        }
+        Err(error) => (
+            Settings::default(),
+            vec![format!(
+                "settings file: LOCALAPPDATA not set, using defaults: {error}"
+            )],
+        ),
     }
 }
 
@@ -184,14 +204,48 @@ mod tests {
 
     #[test]
     fn missing_file_yields_defaults() {
-        let settings = load_from_path(std::path::Path::new("/nonexistent/settings.json"));
+        let (settings, diagnostics) =
+            load_from_path(std::path::Path::new("/nonexistent/settings.json"));
         assert_eq!(settings, Settings::default());
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
     fn malformed_json_yields_defaults_not_a_panic() {
-        assert_eq!(parse("{ not json"), None);
         assert_eq!(parse("{ not json").unwrap_or_default(), Settings::default());
+    }
+
+    #[test]
+    fn malformed_json_yields_a_diagnostic_message() {
+        // Proves the loader surfaces the "malformed JSON" diagnostic as
+        // returned data (not a tracing side effect) so callers can log it
+        // once a subscriber actually exists — see `parse`'s doc comment.
+        let error = parse("{ not json").unwrap_err();
+        assert!(
+            error.contains("malformed JSON"),
+            "diagnostic message was: {error:?}"
+        );
+    }
+
+    #[test]
+    fn load_from_path_surfaces_malformed_json_diagnostic() {
+        let dir = std::env::temp_dir().join(format!(
+            "notify-agent-windows-settings-test-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let (settings, diagnostics) = load_from_path(&path);
+        assert_eq!(settings, Settings::default());
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains("malformed JSON"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -149,11 +149,21 @@ mod win {
         // Read the settings file before installing the log filter, since the
         // filter itself can come from the file's `logLevel` (RUST_LOG still
         // takes priority when set — see `settings::resolve_log_filter`).
-        let settings = settings::load();
+        // `settings::load()` returns any load-time diagnostics (malformed
+        // JSON, unreadable file, missing LOCALAPPDATA) as plain data instead
+        // of logging them directly: no `tracing` subscriber exists yet at
+        // this point, so a `tracing::warn!` call made here would be
+        // silently dropped. They're logged just below, once a subscriber is
+        // actually installed.
+        let (settings, settings_diagnostics) = settings::load();
 
         tracing_subscriber::fmt()
             .with_env_filter(settings::resolve_log_filter(&settings))
             .init();
+
+        for diagnostic in &settings_diagnostics {
+            tracing::warn!("{diagnostic}");
+        }
 
         let (close_tx, close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
