@@ -100,15 +100,8 @@ mod win {
     /// persisted-file lookup entirely, so an operator pinning a device id via
     /// either source doesn't also need to touch the device-id file by hand.
     fn device_id(settings_device_id: Option<&str>) -> anyhow::Result<String> {
-        if let Ok(v) = std::env::var("NOTIFY_DEVICE_ID") {
-            if !v.trim().is_empty() {
-                return Ok(v);
-            }
-        }
-        if let Some(v) = settings_device_id {
-            if !v.trim().is_empty() {
-                return Ok(v.to_string());
-            }
+        if let Some(v) = settings::resolved_opt("NOTIFY_DEVICE_ID", settings_device_id) {
+            return Ok(v);
         }
         let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
             .join("DesktopNotificationAgent");

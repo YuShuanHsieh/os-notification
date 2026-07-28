@@ -122,8 +122,9 @@ pub fn resolved_str(env_var: &str, file_value: Option<&str>, default: &str) -> S
 /// `None`).
 pub fn resolved_opt(env_var: &str, file_value: Option<&str>) -> Option<String> {
     if let Ok(v) = std::env::var(env_var) {
-        if !v.trim().is_empty() {
-            return Some(v);
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
         }
     }
     file_value
@@ -158,13 +159,16 @@ pub fn agent_config(settings: &Settings) -> AgentConfig {
 }
 
 /// Resolves the effective log directive: `RUST_LOG` if set and non-blank,
-/// else the settings file's `logLevel`, else `"info"` — matching
-/// `EnvFilter::from_default_env()`'s implicit default from before this
-/// settings file existed.
+/// else the settings file's `logLevel`, else `"info"`. Note this `"info"`
+/// default is a deliberate improvement over, not a preserved match for,
+/// this head's prior behavior: before this settings file existed, an unset
+/// `RUST_LOG` fell through to `EnvFilter::from_default_env()`'s own implicit
+/// default, which is `ERROR` on this toolchain, not `INFO`.
 pub fn resolve_log_directive(settings: &Settings) -> String {
     if let Ok(v) = std::env::var("RUST_LOG") {
-        if !v.trim().is_empty() {
-            return v;
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
         }
     }
     settings
@@ -297,6 +301,21 @@ mod tests {
         assert_eq!(
             resolved_str("NOTIFY_TEST_PRECEDENCE", Some("from-file"), "from-default"),
             "from-env"
+        );
+        clear(&["NOTIFY_TEST_PRECEDENCE"]);
+    }
+
+    #[test]
+    fn env_var_value_is_trimmed_same_as_file_value() {
+        // File values are trimmed (see other tests here); env values must be
+        // too, for consistency — e.g. NOTIFY_NATS_URL=" nats://host " should
+        // not pass leading/trailing whitespace straight through.
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear(&["NOTIFY_TEST_PRECEDENCE"]);
+        std::env::set_var("NOTIFY_TEST_PRECEDENCE", "  from-env  ");
+        assert_eq!(
+            resolved_opt("NOTIFY_TEST_PRECEDENCE", None),
+            Some("from-env".to_string())
         );
         clear(&["NOTIFY_TEST_PRECEDENCE"]);
     }
