@@ -10,25 +10,102 @@
 | `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | All hosts: path to a NATS `.creds` file |
 | `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | C#/Rust Windows only: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
 | `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | C#/Rust Windows only: AAD scope requested when calling the auth service |
-| `NOTIFY_USER_ID` | Required for environment identity | ConsoleHost; Windows fallback identity (Go: the only identity source) |
-| `NOTIFY_DEVICE_ID` | `d-{lowercase machine name}` | Environment identity |
+| `NOTIFY_USER_ID` | Required for environment identity | C# ConsoleHost (required); Rust console head (required); Go ConsoleHost (required). **Not read by the C#, Rust, or Go Windows heads** — see below |
+| `NOTIFY_DEVICE_ID` | `d-{lowercase machine name}` | Environment identity; C#, Rust, and Go Windows heads also accept it (or their respective settings file's `deviceId`) as an override for the default device id |
 | `NOTIFY_AAD_CLIENT_ID` | Unset | C#/Rust Windows only; when set, selects MSAL/WAM (C#) or device-code (Rust) identity |
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | C#/Rust Windows MSAL/device-code identity |
+| `NOTIFY_LOG_LEVEL` | `Information` (C#) / `info` (Go) | C# Windows only: minimum `Microsoft.Extensions.Logging.LogLevel` for the console logger. Go: both heads, minimum `log/slog` level (`debug`/`info`/`warn`/`error`); Go Windows also accepts the settings file's `logLevel` (env wins when both are set) |
+| `RUST_LOG` | `info` | Rust only, both heads: `tracing_subscriber::EnvFilter` directive string (not just a bare level — supports per-module filters). Rust Windows also accepts the settings file's `logLevel` as a plain-level fallback when `RUST_LOG` is unset/blank (`RUST_LOG` wins when both are set) |
 
 `AgentOptions.FromEnvironment` owns transport configuration.
-`EnvironmentIdentityProvider` owns development identity configuration. The Windows
-entry point owns selection between environment and MSAL identity. The Rust Windows
-entry point uses environment identity unless `NOTIFY_AAD_CLIENT_ID` selects its
-device-code identity flow.
+`EnvironmentIdentityProvider` owns development identity configuration; it is used
+unchanged by `NotificationAgent.ConsoleHost` and requires `NOTIFY_USER_ID`. The C#
+Windows entry point owns selection between AAD/MSAL and a Windows-username-derived
+default identity (see "C# Windows settings file" below) — it no longer uses
+`EnvironmentIdentityProvider` or reads `NOTIFY_USER_ID` at all. The Rust Windows
+entry point (`rust/notify-agent-windows/src/main.rs`'s `start_host`) similarly owns
+selection between AAD/device-code and a Windows-username-derived default identity
+(`WindowsUsernameIdentity`, see "Rust Windows settings file" below) — it no longer
+uses `notify_agent_core::identity::EnvIdentity`/reads `NOTIFY_USER_ID` by default.
+The Rust console head is unaffected and still requires `NOTIFY_USER_ID` via the
+same, unchanged `EnvIdentity`. The Go Windows entry point (`cmd/notify-agent-windows`)
+similarly no longer uses `golang/internal/identity.EnvIdentity` or reads
+`NOTIFY_USER_ID` at all — it has no AAD/device-code path to fall back from, so
+`WindowsUsernameIdentity` (see "Go Windows settings file" below) is always used.
+The Go console head is unaffected and still requires `NOTIFY_USER_ID` via
+`EnvIdentity`.
+
+## C# Windows settings file
+
+The C# Windows head also reads an optional JSON settings file at
+`%LOCALAPPDATA%\DesktopNotificationAgent\settings.json`
+(`NotificationAgent.Windows/WindowsSettings.cs`), so an operator can configure a
+deployed agent without setting environment variables. All fields are optional and
+mirror the environment variables above: `natsUrl`, `subjectTemplate`, `ackSubject`,
+`natsCredsFile`, `natsAuthServiceUrl`, `natsAuthServiceScope`, `aadClientId`,
+`aadTenantId`, `deviceId`, `logLevel`. Precedence per field is environment variable
+(non-blank) > settings file value (non-blank) > built-in default. A missing file is
+normal and is never created or required; a malformed file logs a warning and is
+treated as all-defaults rather than failing startup. This file is specific to the C#
+Windows head; the console host and the Rust/Go Windows heads are unaffected.
+
+## Rust Windows settings file
+
+The Rust Windows head also reads an optional JSON settings file at
+`%LOCALAPPDATA%\DesktopNotificationAgent\settings.json`
+(`rust/notify-agent-windows/src/settings.rs`), the same directory and filename
+the C#/Go Windows heads use, so an operator can configure a deployed agent
+without setting environment variables. Fields mirror the environment variables
+above: `natsUrl`, `subjectTemplate`, `ackSubject`, `natsCredsFile`,
+`natsAuthServiceUrl`, `natsAuthServiceScope`, `aadClientId`, `aadTenantId`,
+`deviceId`, `logLevel`. Precedence per field is environment variable (non-blank)
+> settings file value (non-blank) > built-in default — `settings::agent_config`
+and `settings::resolved_str`/`resolved_opt` layer the parsed `Settings` under
+each `std::env::var(...)` call, never by changing
+`notify_agent_core::host::AgentConfig::from_env` itself (shared with the console
+head, which stays pure-env). A missing file is normal and is never created or
+required; a malformed file logs a `tracing::warn!` and is treated as
+all-defaults rather than failing startup. `logLevel` feeds
+`tracing_subscriber`'s `EnvFilter` (see the `RUST_LOG` row above and the
+Windows-runtime logging bullet below); every other field's parsing/precedence
+logic is plain structs and runs under `cargo test` on any platform. This file
+is specific to the Rust Windows head; the console host and the C#/Go Windows
+heads are unaffected.
+
+## Go Windows settings file
+
+The Go Windows head also reads an optional JSON settings file at
+`%LOCALAPPDATA%\DesktopNotificationAgent\settings.json`
+(`golang/cmd/notify-agent-windows/settings.go`), the same directory and
+filename the C# Windows head uses, so an operator can configure a deployed
+agent without setting environment variables. Its schema is intentionally
+narrower than C#'s (see below for why): `natsUrl`, `subjectTemplate`,
+`ackSubject`, `natsCredsFile`, `deviceId`, `logLevel`. Precedence per field is
+environment variable (non-blank) > settings file value (non-blank) > built-in
+default — implemented by `ResolveHostOptions`/`ResolveCredsFile`/
+`ResolveDeviceID`/`ResolveLogLevel` layering the parsed `Settings` under
+`host.OptionsFromEnv()`'s result, never by modifying `host.Options` or
+`host.OptionsFromEnv` itself (those stay shared, cross-platform types). A
+missing file is normal and is never created or required; a malformed file logs
+a warning (`log/slog`) and is treated as all-defaults rather than failing
+startup. This file is specific to the Go Windows head; the Go console host and
+the C#/Rust Windows heads are unaffected.
 
 The Go port (`golang/internal/host.OptionsFromEnv`, `golang/internal/identity.EnvIdentity`)
-currently has a narrower scope than the other two implementations, and this is
-accepted/documented rather than a gap to close incidentally: identity is
-environment-only (`NOTIFY_USER_ID`/`NOTIFY_DEVICE_ID`, no AAD/MSAL/device-code
-sign-in), and NATS auth is creds-file-only (`golang/internal/natsauth.CredsFileAuth`,
-no external-auth-service provider). `NOTIFY_AAD_CLIENT_ID`,
+still has a narrower scope than the other two implementations for NATS auth, and
+this is accepted/documented rather than a gap to close incidentally: NATS auth is
+creds-file-only (`golang/internal/natsauth.CredsFileAuth`, no
+external-auth-service provider) on both Go heads. `NOTIFY_AAD_CLIENT_ID`,
 `NOTIFY_AAD_TENANT_ID`, `NOTIFY_NATS_AUTH_SERVICE_URL`, and
-`NOTIFY_NATS_AUTH_SERVICE_SCOPE` are not consumed by the Go agent.
+`NOTIFY_NATS_AUTH_SERVICE_SCOPE` are not consumed by the Go agent, which is also
+why the Go Windows settings file above has no `natsAuthServiceUrl`/
+`natsAuthServiceScope`/`aadClientId`/`aadTenantId` fields — it only exposes
+configuration the Go Windows head actually acts on. Identity itself is no
+longer environment-only on the Go Windows head specifically (see the
+Windows-username-derived identity fallback above and in
+[`contracts-and-invariants.md`](contracts-and-invariants.md)); the Go console
+head remains environment-only (`NOTIFY_USER_ID`/`NOTIFY_DEVICE_ID`, via
+`EnvIdentity`, no AAD/MSAL/device-code sign-in).
 
 One detail to preserve: `TestPublisher` currently constructs
 `notify.user.{userId}.desktop` directly; it does not consume
@@ -67,9 +144,21 @@ selection between them at startup.
 - A session-scoped `Local\DesktopNotificationAgent` mutex prevents duplicate agent
   processes for the same interactive session.
 - With an AAD client ID, `MsalIdentityProvider` tries silent WAM acquisition and
-  falls back to interactive acquisition when UI is required.
+  falls back to interactive acquisition when UI is required. Without one,
+  `WindowsUsernameIdentityProvider` derives a default identity from the Windows
+  username (`u_{lowercased username}`), rejecting usernames that contain `.`, `*`,
+  or `>` before they can reach subject construction.
 - The device ID file is created beneath
-  `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`.
+  `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`, unless overridden by
+  `NOTIFY_DEVICE_ID`/the settings file's `deviceId`.
+- The compiled `DesktopAgent.exe` and the tray `NotifyIcon` both use
+  `src/NotificationAgent.Windows/app.ico` (copied verbatim from the repo-root
+  canonical `assets/app.ico`; do not regenerate — see commit 9f58508 on why a
+  re-exported `.ico` can silently fail to render as a Win32 resource).
+- The Windows head logs via `Microsoft.Extensions.Logging` (console, single-line),
+  covering identity mode selection, NATS auth mode selection, resolved
+  configuration, and startup success/failure. It does not thread logging through
+  `NotificationAgent.Core`.
 - The Rust Windows head is a tray application rather than a headless process. It
   shows a placeholder icon immediately, displays the running version and Close
   in its context menu, and marks the tooltip when agent startup fails. Close has
@@ -78,6 +167,30 @@ selection between them at startup.
   workflow vendors dependencies so the release build can run with network access
   disabled; see `rust/docker/windows-cross.Dockerfile` and
   `rust/scripts/build-windows-docker.sh`.
+- The Rust device ID file is created beneath
+  `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`, unless overridden by
+  `NOTIFY_DEVICE_ID`/the settings file's `deviceId` (`main.rs`'s `device_id()`).
+- With an AAD client id, `DeviceCodeIdentity` runs the OIDC device-code sign-in
+  flow (see "Identity" in `rust/README.md`). Without one,
+  `rust/notify-agent-windows/src/windows_identity.rs`'s `WindowsUsernameIdentity`
+  derives a default identity from the Windows username via the Win32
+  `GetUserNameW` function (`advapi32.dll`, called directly through the `windows`
+  crate's `Win32_System_WindowsProgramming` feature), lowercases it, strips any
+  `DOMAIN\` prefix, and rejects `.`, `*`, or `>` before it reaches subject
+  construction — the same validated-username identity exception as the C#/Go
+  Windows heads; see `contracts-and-invariants.md`.
+- `rust/notify-agent-windows/assets/app.ico` (embedded via `icon.rc`/`build.rs`)
+  is a copy of the repo-root canonical `assets/app.ico`, matching the C#/Go
+  Windows heads; do not regenerate it independently — see commit 9f58508 on why
+  a re-exported `.ico` can silently fail to render as a Win32 resource.
+- The Rust Windows head logs via `tracing` (`tracing_subscriber::fmt`, single
+  line per event), covering identity mode selection, NATS auth mode selection,
+  resolved configuration, startup success/failure, dropped/duplicate events
+  (queue-full, aggregation-bucket-overflow, dedup-key-seen, parse failures), and
+  render/toast-submission failures. Its filter comes from `RUST_LOG` if set,
+  else the settings file's `logLevel`, else `info` (`settings::resolve_log_filter`).
+  The Rust console head shares the same `tracing`/`RUST_LOG` convention but has
+  no settings file.
 - The Go Windows head (`golang/cmd/notify-agent-windows`) is also a tray
   application rather than a headless process, using
   `github.com/getlantern/systray` for the icon/version/Close menu with the same
@@ -90,6 +203,31 @@ selection between them at startup.
 - Go Windows builds cross-compile from Linux with a plain
   `GOOS=windows GOARCH=amd64 go build`; unlike the Rust head, there is no cgo
   dependency here, so no mingw or other cross-toolchain is required.
+- The compiled `notify-agent-windows.exe`'s icon resource and the tray icon
+  both come from `golang/cmd/notify-agent-windows/assets/app.ico` (copied
+  verbatim from the repo-root canonical `assets/app.ico`; do not regenerate —
+  see commit 9f58508 on why a re-exported `.ico` can silently fail to render
+  as a Win32 resource). Unlike C#'s `<ApplicationIcon>` MSBuild property or
+  Rust's `icon.rc`/`build.rs`, Go has no built-in exe-icon mechanism: a
+  `resource.syso` (generated via `github.com/josephspurrier/goversioninfo`
+  from `versioninfo.json`, both committed alongside it in
+  `cmd/notify-agent-windows/`) is linked automatically by `go build`/
+  `GOOS=windows go build` whenever it is present in the package directory —
+  no `go generate` step or C toolchain is needed at build time. Regenerate it
+  after changing the icon with (run from `cmd/notify-agent-windows/`):
+  `goversioninfo -icon=assets/app.ico -o=resource.syso versioninfo.json`.
+- The Go Windows head resolves identity via `WindowsUsernameIdentity`
+  (`identity_windows.go`), calling the Win32 `GetUserNameW` function
+  (`advapi32.dll`, via the same raw `NewLazySystemDLL`/`NewProc` pattern
+  `aumid.go` uses for `shell32.dll`) rather than an environment variable —
+  see the identity bullet above and `contracts-and-invariants.md`.
+- The Go Windows head logs via the standard library `log/slog` (text handler,
+  stderr), covering identity resolution, NATS connect/subscribe, render
+  failures, queue-full/bucket-overflow drops, and tray lifecycle events
+  (icon shown, Close clicked, agent-start failure). Its minimum level is
+  `NOTIFY_LOG_LEVEL` or the settings file's `logLevel` (env wins), default
+  `info`. The Go console head uses the same `log/slog` convention,
+  environment-only (no settings file), same default.
 
 ## Operational caveats
 

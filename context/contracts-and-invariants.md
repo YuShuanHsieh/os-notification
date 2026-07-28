@@ -18,8 +18,28 @@ this file together.
 - Default acknowledgement subject: `notify.ack.desktop`.
 - `{0}` is formatted with the application user ID returned by
   `IIdentityProvider`.
-- A Windows account name is never the application identity. Production identity
-  uses the Entra object ID prefixed with `u_`; the device ID is stable per install.
+- Production identity uses the Entra object ID prefixed with `u_` (C#/Rust Windows,
+  via AAD/MSAL or device-code sign-in); the device ID is stable per install. The
+  console/dev host's identity (`u_{NOTIFY_USER_ID}`) is likewise independent of the
+  OS account.
+- Deliberate, documented exception: when AAD isn't configured, the C# and Rust
+  Windows heads each derive a default identity from the Windows username instead of
+  requiring `NOTIFY_USER_ID` (`u_{lowercased username}`, via
+  `NotificationAgent.Windows.WindowsUsernameIdentityProvider` in C# and
+  `rust/notify-agent-windows/src/windows_identity.rs`'s `WindowsUsernameIdentity` in
+  Rust). Both implementations validate the username to reject `.`, `*`, and `>`
+  before it is embedded in a subject, since an unvalidated value could otherwise
+  turn a per-user subscription into an accidental wildcard subscription. This
+  exception is scoped to each Windows head; the console host and the AAD/MSAL or
+  device-code sign-in paths are unaffected. `notify-agent-core::identity::EnvIdentity`
+  (Rust's shared, cross-platform `NOTIFY_USER_ID` provider) is unchanged and still
+  backs the Rust console head. The Go Windows head
+  (`golang/cmd/notify-agent-windows`) applies the same `u_{lowercased username}`
+  derivation and subject-safety validation unconditionally rather than as an
+  AAD fallback, since this Go port has no AAD/MSAL/device-code identity path at
+  all (see `identity.go`/`identity_windows.go` and `golang/internal/identity`'s
+  package doc). `golang/internal/identity.EnvIdentity` (the Go console head's
+  `NOTIFY_USER_ID` provider) is unchanged.
 
 ## Inbound JSON
 

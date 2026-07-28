@@ -6,6 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -14,7 +15,6 @@ import (
 	"github.com/getlantern/systray"
 
 	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
-	"github.com/YuShuanHsieh/os-notification/golang/internal/identity"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/natsauth"
 )
 
@@ -47,11 +47,18 @@ var appIcon []byte
 // "icon appears without waiting on NATS connect".
 type trayApp struct {
 	h atomic.Pointer[host.Host]
+
+	// settings is the Feature-2 settings-file value loaded once at process
+	// startup (main.go), before systray.Run -- it never changes for the
+	// life of the process, so no synchronization is needed to read it from
+	// startAgent's goroutine.
+	settings Settings
 }
 
 func (a *trayApp) onReady() {
 	systray.SetIcon(appIcon)
 	systray.SetTooltip(baseTooltip)
+	slog.Info("tray icon shown", "version", version)
 
 	versionItem := systray.AddMenuItem(fmt.Sprintf("Version %s", version), "")
 	versionItem.Disable()
@@ -72,20 +79,25 @@ func (a *trayApp) onExit() {}
 // down (mirrors the C# design's failure path) — but the tooltip is updated
 // to flag the failure, per the "(agent failed to start)" requirement.
 func (a *trayApp) startAgent() {
-	opts := host.OptionsFromEnv()
+	opts := ResolveHostOptions(os.Getenv, host.OptionsFromEnv(), a.settings)
 
 	var authProvider natsauth.Provider
-	if credsPath := os.Getenv("NOTIFY_NATS_CREDS_FILE"); strings.TrimSpace(credsPath) != "" {
+	if credsPath := ResolveCredsFile(os.Getenv, a.settings); strings.TrimSpace(credsPath) != "" {
 		authProvider = natsauth.CredsFileAuth{Path: credsPath}
 	}
 
 	renderer := NewWindowsRenderer(defaultImageCacheDir())
 
-	// identity.EnvIdentity is the only identity provider built so far in
-	// this Go port (no AAD/MSAL/device-code sign-in) — a known, accepted
-	// gap versus the C#/Rust Windows heads, not something this task adds.
-	h, err := host.Start(context.Background(), opts, identity.EnvIdentity{}, renderer, authProvider)
+	// WindowsUsernameIdentity (identity_windows.go) derives identity from
+	// the current Windows account name via GetUserNameW -- a deliberate,
+	// documented exception to "the OS account name is never used as
+	// identity" scoped to the Windows heads (see identity.go's package
+	// doc). This Go port has no AAD/MSAL/device-code sign-in at all, so it
+	// is used unconditionally rather than only as an AAD fallback.
+	idp := WindowsUsernameIdentity{Getenv: os.Getenv, Settings: a.settings}
+	h, err := host.Start(context.Background(), opts, idp, renderer, authProvider)
 	if err != nil {
+		slog.Error("agent failed to start", "error", err)
 		fmt.Fprintf(os.Stderr, "notify-agent-windows: agent failed to start: %v\n", err)
 		systray.SetTooltip(fmt.Sprintf("%s (agent failed to start)", baseTooltip))
 		return
@@ -99,6 +111,7 @@ func (a *trayApp) startAgent() {
 // WM_COMMAND/ID_MENU_CLOSE handler and TrayApplicationContext.OnCloseClickedAsync.
 func (a *trayApp) watchClose(closeItem *systray.MenuItem) {
 	<-closeItem.ClickedCh
+	slog.Info("close clicked, shutting down")
 
 	// Run the bounded graceful shutdown to completion (or timeout) BEFORE
 	// calling systray.Quit(). systray.Quit() causes the blocking

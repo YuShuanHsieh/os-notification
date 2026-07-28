@@ -83,6 +83,12 @@ through `IIdentityProvider`.
 - The deduplication cache is in memory only, so restart loses deduplication state.
 - The Windows head enforces one process per interactive session with a `Local\`
   mutex.
+- The C# Windows head selects identity by presence of `NOTIFY_AAD_CLIENT_ID` (or the
+  settings file's `aadClientId`): AAD/MSAL sign-in when set, otherwise a default
+  derived from the Windows username (`WindowsUsernameIdentityProvider`) — a
+  deliberate, narrow exception to the "Windows account name is never identity"
+  principle, scoped to this one fallback path. See
+  [`contracts-and-invariants.md`](contracts-and-invariants.md).
 - The Rust Windows head creates a visible placeholder tray icon before NATS
   startup completes, runs the async agent behind a Win32 message loop, and keeps
   the tray Close action available when startup fails. Close hides the icon,
@@ -90,6 +96,25 @@ through `IIdentityProvider`.
 - Rust tray implementation details live in
   `rust/notify-agent-windows/src/tray.rs`; its UI behavior requires a live Windows
   desktop smoke test.
+- The Rust Windows head selects identity by presence of `NOTIFY_AAD_CLIENT_ID`
+  (or the settings file's `aadClientId`): device-code sign-in when set,
+  otherwise a default derived from the Windows username
+  (`rust/notify-agent-windows/src/windows_identity.rs`'s `WindowsUsernameIdentity`,
+  via the Win32 `GetUserNameW` call) — the same deliberate, narrow exception to
+  "the Windows account name is never identity" as the C# and Go Windows heads,
+  scoped the same way as C#'s: only taken when AAD isn't configured. The Rust
+  console head is unaffected and still requires `NOTIFY_USER_ID` via
+  `notify_agent_core::identity::EnvIdentity`, unchanged. See
+  [`contracts-and-invariants.md`](contracts-and-invariants.md).
+- The Go Windows head has no AAD/device-code identity path at all, so unlike
+  C#'s AAD-presence-gated fallback, it uses a Windows-username-derived identity
+  (`golang/cmd/notify-agent-windows/identity.go`'s `userIDFromWindowsUsername`,
+  called from `identity_windows.go`'s `WindowsUsernameIdentity`) unconditionally
+  — the same deliberate, narrow exception to "the Windows account name is never
+  identity" as C#'s fallback path, just always taken rather than only when AAD
+  isn't configured. `NOTIFY_USER_ID` is therefore no longer read by the Go
+  Windows head (the console head is unaffected and still requires it). See
+  [`contracts-and-invariants.md`](contracts-and-invariants.md).
 - The Go Windows head is architecturally distinct from both other Windows heads:
   it has no native WinRT bindings, so `golang/cmd/notify-agent-windows/renderer.go`
   builds the same toast XML (`golang/internal/windowstoast`) and submits it by
