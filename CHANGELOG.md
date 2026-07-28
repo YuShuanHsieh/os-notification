@@ -29,6 +29,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   Windows head, and test-publisher dev tool, wire-compatible with the C# and
   Rust agents (same NATS subjects, JSON payload, and acknowledgement
   contract).
+- A custom tray/exe icon for all three Windows heads (C#, Rust, Go), sourced
+  from one canonical `assets/app.ico` at the repo root.
+- A per-user `settings.json` file for all three Windows heads
+  (`%LOCALAPPDATA%\DesktopNotificationAgent\settings.json`), letting an
+  operator configure a deployed agent without environment variables;
+  environment variables still take precedence when set.
+- Structured Debug/Info/Warn/Error logging across all three implementations
+  (`Microsoft.Extensions.Logging` for C#, expanded `tracing` coverage for
+  Rust, `log/slog` for Go), configurable via `NOTIFY_LOG_LEVEL` / the
+  settings file's `logLevel` field.
 
 ### Changed
 
@@ -36,6 +46,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   configured for the Rust agent.
 - Rust and C# notification tooling now share the documented image, scenario,
   and acknowledgement payload behavior.
+- The Windows heads (C#, Rust, Go) no longer require `NOTIFY_USER_ID`: when
+  AAD sign-in isn't configured, each now derives a default identity from the
+  Windows-logged-in username (`u_{lowercased username}`, validated against
+  NATS subject-unsafe characters) instead. This is a deliberate, documented
+  exception to this repo's "the Windows account name is never used as
+  identity" principle, scoped to the Windows heads only — the AAD sign-in
+  path and the Linux console heads (which still require `NOTIFY_USER_ID`)
+  are unaffected.
 
 ### Fixed
 

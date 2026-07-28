@@ -226,6 +226,20 @@ With the Windows head running (above), confirm the tray icon and its Close actio
 3. Click "Close". Within a few seconds the tray icon disappears and the process exits — confirm `DesktopAgent.exe` is gone from Task Manager.
 4. **Failure-path check:** point `NOTIFY_NATS_URL` at an unreachable server (e.g. `nats://127.0.0.1:4223`) and relaunch. The tray icon should still appear, its tooltip should mention the agent failed to start, and "Close" should still terminate the process within the same few seconds.
 
+### Changing the tray icon
+
+All three Windows heads (C#, Rust, Go) render the same custom icon, sourced from one canonical file: **`assets/app.ico`** at the repo root. Replace that file first — **it must use classic BMP/DIB-encoded icon frames, not PNG-compressed ones** (e.g. Pillow: `img.save(..., format="ICO", sizes=[...], bitmap_format="bmp")` — its default is PNG). PNG-compressed `.ico` frames inspect as perfectly valid but silently fail to render once compiled into a Win32 resource — this bit the Rust head once already (commit `9f58508`).
+
+After replacing `assets/app.ico`, copy it into each language's project and rebuild:
+
+| Language | Copy to | Rebuild |
+|---|---|---|
+| C# | `src/NotificationAgent.Windows/app.ico` | `dotnet build src/NotificationAgent.Windows/NotificationAgent.Windows.csproj` — picked up automatically via `<ApplicationIcon>` |
+| Rust | `rust/notify-agent-windows/assets/app.ico` | `cargo build --release --target x86_64-pc-windows-gnu -p notify-agent-windows` — re-embedded via `icon.rc`/`build.rs` |
+| Go | `golang/cmd/notify-agent-windows/assets/app.ico` | Regenerate the exe resource, then `GOOS=windows GOARCH=amd64 go build ./cmd/notify-agent-windows`: <br>`go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest`<br>`goversioninfo -icon=assets/app.ico -o=resource_windows_amd64.syso versioninfo.json` (run from `golang/cmd/notify-agent-windows/`) |
+
+Each language's own README has the same instructions plus the mechanism-specific detail (`rust/README.md`, `golang/README.md`).
+
 ## Development
 
 - **TDD workflow:** every Core component was built test-first; keep it that way. All time-dependent code takes a `TimeProvider` so tests use `FakeTimeProvider` — no sleeps or polling.
