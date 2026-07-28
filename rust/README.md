@@ -9,6 +9,7 @@ A Rust port of the desktop notification agent, wire-compatible with the C# agent
 | `notify-agent-core` | Cross-platform library: event parsing, dedup, aggregation/batching, toast content, ack telemetry, identity, NATS host. Runs and tests on Linux. |
 | `notify-agent-console` | Linux dev head — subscribes for real, prints `[TOAST]` blocks to stdout instead of showing a native toast. |
 | `notify-agent-windows` | Windows head — real WinRT toast notifications. Compiles to a stub on non-Windows targets so the workspace stays buildable here; only runs on Windows. |
+| `test-publisher` | Dev tool: publishes test notification events to NATS (Rust port of `../tools/TestPublisher`, full feature parity — scenarios, flags, legacy positional mode). |
 
 ## Prerequisites
 
@@ -42,14 +43,13 @@ cargo run -p notify-agent-console
 
 It subscribes to `notify.user.u_demo.desktop`, prints a `[TOAST]` block for each rendered notification, and shuts down gracefully on Ctrl+C.
 
-Publish a test event from another shell (needs the .NET SDK):
+Publish a test event from another shell:
 
 ```bash
-export PATH="$HOME/.dotnet:$PATH"
-dotnet run --project ../tools/TestPublisher -- u_demo --scenario presence
+cargo run -p test-publisher -- u_demo --scenario presence
 ```
 
-`TestPublisher --scenario <name>` drives every schema use case end-to-end (avatar image, action button, priority batching, deduplication, replaceable progress updates) — see `../tools/TestPublisher/Program.cs` or run it with `--help`-style bad input to print the usage text, which lists all scenarios and flags.
+`test-publisher --scenario <name>` drives every schema use case end-to-end (avatar image, action button, priority batching, deduplication, replaceable progress updates) — run it with no args to print the usage text, which lists all scenarios and flags. It's a Rust port of the C# `../tools/TestPublisher` (`dotnet run --project ../tools/TestPublisher -- u_demo --scenario presence`, needs the .NET SDK), kept for parity — either works.
 
 ## Configuration (environment variables)
 

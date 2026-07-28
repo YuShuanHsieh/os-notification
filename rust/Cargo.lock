@@ -1708,6 +1708,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-publisher"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "chrono",
+ "futures",
+ "rand 0.8.7",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
