@@ -23,13 +23,23 @@ if (!isFirstInstance)
 // (WindowsSettings.Resolve owns the per-field precedence).
 var settingsPath = WindowsSettings.DefaultPath;
 var settingsFileExists = File.Exists(settingsPath);
-var settingsFile = WindowsSettings.LoadFile(settingsPath);
-var settings = WindowsSettings.Resolve(settingsFile, Environment.GetEnvironmentVariable);
+var settingsDiagnostics = new List<SettingsDiagnostic>();
+var settingsFile = WindowsSettings.LoadFile(settingsPath, settingsDiagnostics);
+var settings = WindowsSettings.Resolve(settingsFile, Environment.GetEnvironmentVariable, settingsDiagnostics);
 
 using var loggerFactory = LoggerFactory.Create(builder => builder
     .AddSimpleConsole(o => o.SingleLine = true)
     .SetMinimumLevel(settings.LogLevel));
 var startupLogger = loggerFactory.CreateLogger("Startup");
+
+// Replay diagnostics gathered while loading/resolving settings: the logger's minimum level
+// comes from the settings file itself, so it couldn't have been passed down to log these as
+// they happened (see SettingsDiagnostic).
+foreach (var diagnostic in settingsDiagnostics)
+{
+    diagnostic.Replay(startupLogger);
+}
+
 startupLogger.StartupSettingsFile(settingsPath, settingsFileExists);
 
 var options = settings.Options;

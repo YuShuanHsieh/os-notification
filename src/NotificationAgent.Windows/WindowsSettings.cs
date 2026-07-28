@@ -75,6 +75,39 @@ public sealed record ResolvedWindowsSettings(
     string? DeviceId,
     LogLevel LogLevel);
 
+/// <summary>A diagnostic produced while loading/resolving the settings file, deferred until a
+/// real logger exists (feature: app settings file / logging). <see cref="LoadFile"/> and
+/// <see cref="WindowsSettings.Resolve"/> run before the logger can be constructed — the
+/// logger's minimum level is itself read from the settings file, a chicken-and-egg problem —
+/// so passing a logger to them directly means messages like "settings file read failed" can
+/// never actually surface. Instead, callers pass a collection to gather these into, then
+/// replay each one through the real logger immediately after constructing it.</summary>
+public abstract record SettingsDiagnostic
+{
+    private SettingsDiagnostic()
+    {
+    }
+
+    /// <summary>Logs this diagnostic through <paramref name="logger"/> at the message's
+    /// intended level.</summary>
+    public abstract void Replay(ILogger logger);
+
+    /// <summary>The settings file existed but failed to read/parse; the caller fell back to
+    /// all-defaults for the whole file.</summary>
+    public sealed record FileReadFailed(Exception Exception, string Path) : SettingsDiagnostic
+    {
+        public override void Replay(ILogger logger) => logger.SettingsFileReadFailed(Exception, Path);
+    }
+
+    /// <summary>The resolved log level text (from env var or settings file) didn't parse to a
+    /// defined <see cref="Microsoft.Extensions.Logging.LogLevel"/> value; the caller fell back
+    /// to <see cref="Microsoft.Extensions.Logging.LogLevel.Information"/>.</summary>
+    public sealed record LogLevelUnrecognized(string LogLevelText) : SettingsDiagnostic
+    {
+        public override void Replay(ILogger logger) => logger.LogLevelUnrecognized(LogLevelText);
+    }
+}
+
 /// <summary>Loads the optional Windows settings file and resolves it against environment
 /// variables and built-in defaults (feature: app settings file). Precedence per field is
 /// environment variable (non-blank) &gt; settings file value (non-blank) &gt; built-in
@@ -94,8 +127,10 @@ public static class WindowsSettings
         "settings.json");
 
     /// <summary>Reads and parses the settings file at <paramref name="path"/>. Returns an
-    /// all-null instance when the file is absent, empty, or fails to parse.</summary>
-    public static WindowsSettingsFile LoadFile(string path, ILogger? logger = null)
+    /// all-null instance when the file is absent, empty, or fails to parse. A read/parse
+    /// failure is appended to <paramref name="diagnostics"/> (if provided) rather than logged
+    /// immediately — see <see cref="SettingsDiagnostic"/> for why.</summary>
+    public static WindowsSettingsFile LoadFile(string path, ICollection<SettingsDiagnostic>? diagnostics = null)
     {
         if (!File.Exists(path))
         {
@@ -109,7 +144,7 @@ public static class WindowsSettings
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            logger?.SettingsFileReadFailed(ex, path);
+            diagnostics?.Add(new SettingsDiagnostic.FileReadFailed(ex, path));
             return new WindowsSettingsFile();
         }
     }
@@ -117,9 +152,11 @@ public static class WindowsSettings
     /// <summary>Applies env-var &gt; file &gt; default precedence to every field, producing
     /// the concrete configuration <c>Program.cs</c> passes to <c>AgentHost</c> and the
     /// identity/NATS-auth selection helpers. <paramref name="getEnv"/> is injected so this
-    /// logic is testable without touching real process environment variables.</summary>
+    /// logic is testable without touching real process environment variables. An
+    /// unrecognized log level is appended to <paramref name="diagnostics"/> (if provided)
+    /// rather than logged immediately — see <see cref="SettingsDiagnostic"/> for why.</summary>
     public static ResolvedWindowsSettings Resolve(
-        WindowsSettingsFile file, Func<string, string?> getEnv, ILogger? logger = null)
+        WindowsSettingsFile file, Func<string, string?> getEnv, ICollection<SettingsDiagnostic>? diagnostics = null)
     {
         var options = new AgentOptions
         {
@@ -131,7 +168,7 @@ public static class WindowsSettings
         var logLevelText = Pick(getEnv("NOTIFY_LOG_LEVEL"), file.LogLevel, "Information");
         if (!Enum.TryParse<LogLevel>(logLevelText, ignoreCase: true, out var logLevel))
         {
-            logger?.LogLevelUnrecognized(logLevelText);
+            diagnostics?.Add(new SettingsDiagnostic.LogLevelUnrecognized(logLevelText));
             logLevel = LogLevel.Information;
         }
 

@@ -158,10 +158,112 @@ public class WindowsSettingsTests
         }
     }
 
+    [Fact]
+    public void LoadFile_records_a_deferred_diagnostic_when_the_file_is_malformed_instead_of_logging_immediately()
+    {
+        // LoadFile runs before the real logger exists (its minimum level comes from the
+        // settings file itself), so it must not require a logger to report a failure --
+        // callers collect diagnostics and replay them once a logger is available.
+        var path = WriteTempFile("{ this is not valid json");
+        var diagnostics = new List<SettingsDiagnostic>();
+        try
+        {
+            WindowsSettings.LoadFile(path, diagnostics);
+
+            var diagnostic = Assert.Single(diagnostics);
+            var fileReadFailed = Assert.IsType<SettingsDiagnostic.FileReadFailed>(diagnostic);
+            Assert.Equal(path, fileReadFailed.Path);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LoadFile_records_no_diagnostic_when_the_file_is_absent()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
+        var diagnostics = new List<SettingsDiagnostic>();
+
+        WindowsSettings.LoadFile(path, diagnostics);
+
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public void Resolve_records_a_deferred_diagnostic_when_log_level_is_unrecognized()
+    {
+        var file = new WindowsSettingsFile { LogLevel = "not-a-level" };
+        var diagnostics = new List<SettingsDiagnostic>();
+
+        var resolved = WindowsSettings.Resolve(file, NoEnv, diagnostics);
+
+        Assert.Equal(LogLevel.Information, resolved.LogLevel);
+        var diagnostic = Assert.Single(diagnostics);
+        var unrecognized = Assert.IsType<SettingsDiagnostic.LogLevelUnrecognized>(diagnostic);
+        Assert.Equal("not-a-level", unrecognized.LogLevelText);
+    }
+
+    [Fact]
+    public void Resolve_records_no_diagnostic_when_log_level_is_recognized()
+    {
+        var file = new WindowsSettingsFile { LogLevel = "debug" };
+        var diagnostics = new List<SettingsDiagnostic>();
+
+        WindowsSettings.Resolve(file, NoEnv, diagnostics);
+
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public void SettingsDiagnostic_FileReadFailed_replays_as_a_warning_log_through_a_real_logger()
+    {
+        var diagnostic = new SettingsDiagnostic.FileReadFailed(new IOException("boom"), "/x/settings.json");
+        var logger = new RecordingLogger();
+
+        diagnostic.Replay(logger);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Contains("/x/settings.json", entry.Message);
+    }
+
+    [Fact]
+    public void SettingsDiagnostic_LogLevelUnrecognized_replays_as_a_warning_log_through_a_real_logger()
+    {
+        var diagnostic = new SettingsDiagnostic.LogLevelUnrecognized("not-a-level");
+        var logger = new RecordingLogger();
+
+        diagnostic.Replay(logger);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Contains("not-a-level", entry.Message);
+    }
+
     private static string WriteTempFile(string contents)
     {
         var path = Path.Combine(Path.GetTempPath(), $"settings-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, contents);
         return path;
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 }
