@@ -88,6 +88,16 @@ Run formatting verification after restore/build because `--no-restore` keeps the
 lint check deterministic. To fix supported formatting diagnostics locally, remove
 `--verify-no-changes`, inspect the resulting diff, and then rerun verification.
 
+`dotnet build` for `NotificationAgent.Windows` and its test project succeeds on
+Linux/WSL (confirmed against the unmodified baseline, not something introduced by
+any specific change), but `dotnet test tests/NotificationAgent.Windows.Tests` fails
+to even launch there: the project's `net10.0-windows10.0.19041.0` target requires
+the `Microsoft.WindowsDesktop.App` shared runtime at process start (because
+`UseWindowsForms` is set), and Microsoft does not ship that runtime for Linux —
+only the reference assemblies needed to compile. Review Windows-head test logic by
+reading it and, when a real Windows machine or CI runner is available, execute
+`dotnet test` there.
+
 ## Integration-test interpretation
 
 `NatsIntegrationTests` probes `127.0.0.1:4222`. When NATS is unavailable, its test
