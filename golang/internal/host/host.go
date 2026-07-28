@@ -67,7 +67,38 @@ const (
 	dedupTTL              = 10 * time.Minute
 	pipelineQueueCapacity = 500
 	pipelineWorkerCount   = 2
+
+	// renderTimeout bounds a single renderer.Show call. The Windows renderer
+	// shells out to a child process (PowerShell); without a bound, a hung
+	// child would block the aggregator's dispatch path indefinitely and
+	// (via Shutdown's agg.Flush()) could hang shutdown itself. Deliberately
+	// generous relative to the image cache's own 3s download timeout, since
+	// Show may also invoke a renderer that does its own bounded I/O first.
+	renderTimeout = 30 * time.Second
 )
+
+// validateSubjectTemplate rejects a subject template that doesn't actually
+// have anywhere to substitute the resolved user ID -- fmt.Sprintf would
+// otherwise silently emit a malformed subject (e.g. trailing "%!s(MISSING)")
+// instead of failing startup clearly.
+func validateSubjectTemplate(template string) error {
+	if !strings.Contains(template, "%s") {
+		return fmt.Errorf("subject template %q must contain a %%s placeholder for the user ID", template)
+	}
+	return nil
+}
+
+// validateUserIDForSubject rejects a user ID containing NATS subject
+// delimiter/wildcard characters. Without this, a user ID of e.g. "*" or ">"
+// substituted into "notify.user.%s.desktop" would silently turn a per-user
+// subscription into a wildcard subscription receiving every user's events --
+// a privacy/correctness issue, not just a malformed subject.
+func validateUserIDForSubject(userID string) error {
+	if strings.ContainsAny(userID, ".*>") {
+		return fmt.Errorf("user ID %q must not contain NATS subject wildcard/delimiter characters ('.', '*', '>')", userID)
+	}
+	return nil
+}
 
 // deps bundles the pieces of Host construction that tests need to override
 // (a faster clock, shorter aggregation windows) but production code always
@@ -126,6 +157,13 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 	ident, err := idp.Resolve(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: resolve identity: %w", err)
+	}
+
+	if err := validateSubjectTemplate(opts.SubjectTemplate); err != nil {
+		return nil, fmt.Errorf("host: %w", err)
+	}
+	if err := validateUserIDForSubject(ident.UserID); err != nil {
+		return nil, fmt.Errorf("host: %w", err)
 	}
 
 	var natsOpts []nats.Option
@@ -223,8 +261,13 @@ func (h *Host) render(batch []*model.InboundNotification) {
 	// shutdown-triggered aggregator.Flush() must still be able to render
 	// (and thus acknowledge) whatever was pending, per the "flush the
 	// aggregator" shutdown step -- it must not be starved by a context
-	// that Shutdown already canceled one step earlier.
-	submittedAt, err := h.renderer.Show(context.Background(), req)
+	// that Shutdown already canceled one step earlier. Still bounded by its
+	// own timeout so a hung renderer (e.g. a stuck PowerShell child process)
+	// can't block the aggregator's dispatch path or Shutdown's Flush call
+	// forever.
+	renderCtx, cancel := context.WithTimeout(context.Background(), renderTimeout)
+	defer cancel()
+	submittedAt, err := h.renderer.Show(renderCtx, req)
 	if err != nil {
 		return
 	}

@@ -598,3 +598,39 @@ func TestStartFailsOnUnreachableNATS(t *testing.T) {
 		t.Fatalf("Start() host = %v, want nil on failure", h)
 	}
 }
+
+func TestStartFailsOnSubjectTemplateMissingPlaceholder(t *testing.T) {
+	idp := fixedIdentity{id: identity.Identity{UserID: "u1", DeviceID: "d1"}}
+	opts := Options{
+		NatsURL:         natsTestURL,
+		SubjectTemplate: "notify.user.desktop", // no %s placeholder
+		AckSubject:      "notify.ack.desktop",
+	}
+
+	h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil)
+	if err == nil {
+		t.Fatalf("Start() error = nil, want non-nil for a subject template with no %%s placeholder")
+	}
+	if h != nil {
+		t.Fatalf("Start() host = %v, want nil on failure", h)
+	}
+}
+
+func TestStartFailsOnUserIDWithSubjectWildcardCharacters(t *testing.T) {
+	opts := Options{
+		NatsURL:         natsTestURL,
+		SubjectTemplate: "notify.user.%s.desktop",
+		AckSubject:      "notify.ack.desktop",
+	}
+
+	for _, userID := range []string{"*", ">", "a.b", "a*b", "a>b"} {
+		idp := fixedIdentity{id: identity.Identity{UserID: userID, DeviceID: "d1"}}
+		h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil)
+		if err == nil {
+			t.Errorf("Start() with UserID %q: error = nil, want non-nil (subject wildcard/delimiter character)", userID)
+		}
+		if h != nil {
+			t.Errorf("Start() with UserID %q: host = %v, want nil on failure", userID, h)
+		}
+	}
+}
