@@ -17,7 +17,8 @@
   when no server is reachable at `127.0.0.1:4222`, mirroring the C#/Rust
   integration-test pattern.
 
-Tests use xUnit. Time-dependent core tests use
+.NET tests use xUnit; Go tests use the standard library `testing` package (see
+above). Time-dependent .NET core tests use
 `Microsoft.Extensions.TimeProvider.Testing.FakeTimeProvider`; new deterministic
 timing behavior should follow that pattern.
 
@@ -68,6 +69,8 @@ cd rust
 
 ```bash
 cd golang
+gofmt -l .
+go vet ./...
 go build ./...
 go test ./...
 go test -race ./...

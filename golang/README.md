@@ -1,6 +1,6 @@
 # Go Notification Agent
 
-A Go port of the desktop notification agent, wire-compatible with the C# agent in `../src/NotificationAgent.*` and the Rust port in `../rust`: same NATS subjects, same `content` JSON schema, same acknowledgement contract. See `../docs/superpowers/specs/2026-07-20-rust-notification-agent-design.md` for the design this port also follows (no separate Go design doc exists — this is a faithful line-for-line port of the Rust/C# behavior).
+A Go port of the desktop notification agent, wire-compatible with the C# agent in `../src/NotificationAgent.*` and the Rust port in `../rust`: same NATS subjects, same `content` JSON schema, same acknowledgement contract. See `../docs/superpowers/specs/2026-07-20-rust-notification-agent-design.md` for the design this port also follows (no separate Go design doc exists). This is a behavioral, wire-compatible port, not a line-for-line one — in particular, the Windows head's architecture differs from both references (toast submission via a PowerShell-invoked WinRT script instead of native bindings, and a `systray`-based tray icon instead of WinForms/raw Win32 calls); see "Known gaps" below.
 
 ## Layout
 
@@ -41,6 +41,8 @@ A Go port of the desktop notification agent, wire-compatible with the C# agent i
 
 ```bash
 cd golang
+gofmt -l .
+go vet ./...
 go build ./...
 go test ./...
 go test -race ./...
