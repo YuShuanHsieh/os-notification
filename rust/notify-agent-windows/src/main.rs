@@ -273,6 +273,19 @@ mod win {
                 // context/contracts-and-invariants.md and windows_identity.rs. The
                 // console head's EnvIdentity (NOTIFY_USER_ID) is unaffected.
                 tracing::debug!("identity: mode = windows-username (no NOTIFY_AAD_CLIENT_ID)");
+                // A deployment carried over from before this head derived identity
+                // from the Windows username may still have NOTIFY_USER_ID set (it's
+                // what the console head's EnvIdentity reads) — that's now silently
+                // ignored here, which deserves a visible signal rather than letting
+                // the operator assume it still takes effect.
+                if let Ok(v) = std::env::var("NOTIFY_USER_ID") {
+                    if !v.trim().is_empty() {
+                        tracing::warn!(
+                            "NOTIFY_USER_ID is set but ignored by the Windows head: identity is \
+                             derived from the Windows username instead (see windows_identity.rs)"
+                        );
+                    }
+                }
                 Arc::new(WindowsUsernameIdentity {
                     device_id: device_id(settings.device_id.as_deref())?,
                 })
