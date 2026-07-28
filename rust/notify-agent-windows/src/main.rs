@@ -35,6 +35,7 @@ mod win {
         NatsAuthProvider,
     };
     use notify_agent_core::toast::{ToastRenderer, ToastRequest};
+    use tracing_subscriber::prelude::*;
     use windows::core::{w, HSTRING};
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -123,6 +124,32 @@ mod win {
         Ok(id)
     }
 
+    /// Rolling daily file sink under
+    /// `%LOCALAPPDATA%\DesktopNotificationAgent\logs\`. `#![windows_subsystem
+    /// = "windows"]` means this binary never has a console allocated, and
+    /// `tracing_subscriber::fmt`'s default writer is stdout — which goes
+    /// nowhere once this runs as a real deployed tray app (double-clicked,
+    /// launched from the Startup folder, etc.), leaving no production
+    /// debuggability at all despite that being this whole feature's point.
+    /// Returns the non-blocking writer plus its worker guard (the caller
+    /// MUST keep the guard alive for the rest of the process's lifetime:
+    /// dropping it flushes and stops the background writer thread, silently
+    /// losing anything logged afterward) and the directory, for the one log
+    /// line announcing where to find it.
+    fn file_log_writer() -> anyhow::Result<(
+        tracing_appender::non_blocking::NonBlocking,
+        tracing_appender::non_blocking::WorkerGuard,
+        std::path::PathBuf,
+    )> {
+        let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
+            .join("DesktopNotificationAgent")
+            .join("logs");
+        std::fs::create_dir_all(&dir)?;
+        let appender = tracing_appender::rolling::daily(&dir, "agent.log");
+        let (writer, guard) = tracing_appender::non_blocking(appender);
+        Ok((writer, guard, dir))
+    }
+
     /// Tray icon + Win32 message loop run on the calling (main) thread; the agent's async
     /// lifetime runs on a dedicated thread with its own tokio runtime, since a blocking
     /// `GetMessageW` pump and a blocking `block_on` can't share one thread (design: system
@@ -150,12 +177,51 @@ mod win {
         // actually installed.
         let (settings, settings_diagnostics) = settings::load();
 
-        tracing_subscriber::fmt()
-            .with_env_filter(settings::resolve_log_filter(&settings))
-            .init();
+        // Stdout layer (helps when run from a terminal during development)
+        // plus a rolling file layer under
+        // `%LOCALAPPDATA%\DesktopNotificationAgent\logs\` (the only sink
+        // that actually exists in this app's real deployed configuration —
+        // see `file_log_writer`'s doc comment), both under one shared
+        // `EnvFilter`. `_file_guard` must stay alive for the rest of this
+        // function's scope (see `file_log_writer`); `file_log_error` is
+        // captured before the result is consumed so it can still be logged
+        // below, once a subscriber exists either way.
+        let filter = settings::resolve_log_filter(&settings);
+        let file_log_result = file_log_writer();
+        let file_log_error = file_log_result.as_ref().err().map(|e| e.to_string());
+        let (_file_guard, log_dir) = match file_log_result {
+            Ok((writer, guard, dir)) => {
+                tracing_subscriber::registry()
+                    .with(filter)
+                    .with(tracing_subscriber::fmt::layer())
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_writer(writer)
+                            .with_ansi(false),
+                    )
+                    .init();
+                (Some(guard), Some(dir))
+            }
+            Err(_) => {
+                tracing_subscriber::registry()
+                    .with(filter)
+                    .with(tracing_subscriber::fmt::layer())
+                    .init();
+                (None, None)
+            }
+        };
 
         for diagnostic in &settings_diagnostics {
             tracing::warn!("{diagnostic}");
+        }
+        match (&log_dir, &file_log_error) {
+            (Some(dir), _) => tracing::debug!(dir = %dir.display(), "file logging enabled"),
+            (None, Some(error)) => tracing::warn!(
+                %error,
+                "file logging: could not set up rolling file log under \
+                 %LOCALAPPDATA%\\DesktopNotificationAgent\\logs, stdout only"
+            ),
+            (None, None) => unreachable!("file_log_writer always returns Ok or Err"),
         }
 
         let (close_tx, close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
