@@ -10,7 +10,7 @@
 package aggregator
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -123,7 +123,9 @@ func (a *Aggregator) Add(event *model.InboundNotification) {
 	if !ok {
 		if len(a.buckets) >= a.opts.MaxBuckets {
 			a.droppedBucketOverflow++
+			maxBuckets := a.opts.MaxBuckets
 			a.mu.Unlock()
+			slog.Warn("aggregator: dropped event, bucket overflow", "aggregationKey", key.aggregationKey, "priority", key.priority, "maxBuckets", maxBuckets)
 			return
 		}
 		window := a.opts.NormalWindow
@@ -190,7 +192,7 @@ func (a *Aggregator) Flush() {
 func (a *Aggregator) safeRender(batch []*model.InboundNotification) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("aggregator: recovered from panic while rendering batch: %v", r)
+			slog.Error("aggregator: recovered from panic while rendering batch", "panic", r)
 		}
 	}()
 	a.render(batch)

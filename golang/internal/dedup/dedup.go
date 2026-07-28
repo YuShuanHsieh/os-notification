@@ -5,6 +5,7 @@
 package dedup
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 
@@ -64,6 +65,7 @@ func (c *Cache) SeenOrAdd(key string) bool {
 	}
 
 	if existing, ok := c.expiryByKey[key]; ok && existing.After(now) {
+		slog.Debug("dedup: dropped duplicate event", "dedupKey", key)
 		return true
 	}
 

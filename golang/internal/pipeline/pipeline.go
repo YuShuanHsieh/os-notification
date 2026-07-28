@@ -14,7 +14,7 @@ package pipeline
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,6 +95,7 @@ func (p *Pipeline) TryEnqueue(payload []byte) bool {
 		return true
 	default:
 		p.droppedQueueFull.Add(1)
+		slog.Warn("pipeline: dropped payload, intake queue full", "queueCapacity", cap(p.queue))
 		return false
 	}
 }
@@ -147,7 +148,7 @@ func (p *Pipeline) workerLoop(ctx context.Context) {
 func (p *Pipeline) process(item queueItem) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("pipeline: recovered from panic while processing event: %v", r)
+			slog.Error("pipeline: recovered from panic while processing event", "panic", r)
 		}
 	}()
 

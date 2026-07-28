@@ -11,6 +11,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -158,6 +159,7 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 	if err != nil {
 		return nil, fmt.Errorf("host: resolve identity: %w", err)
 	}
+	slog.Debug("host: identity resolved", "provider", fmt.Sprintf("%T", idp), "userId", ident.UserID, "deviceId", ident.DeviceID)
 
 	if err := validateSubjectTemplate(opts.SubjectTemplate); err != nil {
 		return nil, fmt.Errorf("host: %w", err)
@@ -178,6 +180,7 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 	if err != nil {
 		return nil, fmt.Errorf("host: connect nats: %w", err)
 	}
+	slog.Info("host: connected to nats", "natsUrl", opts.NatsURL)
 
 	h := &Host{
 		nc:         nc,
@@ -200,6 +203,7 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 		return nil, fmt.Errorf("host: subscribe: %w", err)
 	}
 	h.sub = sub
+	slog.Info("host: subscribed", "subject", h.subject)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	h.cancel = cancel
@@ -269,6 +273,7 @@ func (h *Host) render(batch []*model.InboundNotification) {
 	defer cancel()
 	submittedAt, err := h.renderer.Show(renderCtx, req)
 	if err != nil {
+		slog.Error("host: toast render failed", "error", err, "batchSize", len(batch))
 		return
 	}
 
@@ -301,6 +306,7 @@ func (h *Host) publishAck(ack telemetry.Ack) {
 // documented "shutdown is best-effort, not a durable drain guarantee"
 // contract (context/architecture.md).
 func (h *Host) Shutdown(ctx context.Context) error {
+	slog.Info("host: shutting down", "subject", h.subject)
 	if h.cancel != nil {
 		h.cancel()
 	}
