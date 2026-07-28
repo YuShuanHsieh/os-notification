@@ -33,7 +33,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application,
+            Icon = TryExtractApplicationIcon(Application.ExecutablePath) ?? SystemIcons.Application,
             Text = BaseTooltip,
             ContextMenuStrip = menu,
             Visible = true,
@@ -53,6 +53,24 @@ public sealed class TrayApplicationContext : ApplicationContext
             _ = StartAgentAsync(startAgent);
         };
         startTimer.Start();
+    }
+
+    // Icon.ExtractAssociatedIcon can throw (not just return null) in some conditions -- e.g.
+    // path resolution failing before the extraction itself runs. A failed icon load must
+    // never crash startup, so fall back to SystemIcons.Application on any exception, not
+    // only a null result. Internal (rather than inlined) and parameterized so it's directly
+    // unit testable with a deliberately bad path, without depending on WinForms application
+    // state.
+    internal static Icon? TryExtractApplicationIcon(string executablePath)
+    {
+        try
+        {
+            return Icon.ExtractAssociatedIcon(executablePath);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private async Task StartAgentAsync(Func<CancellationToken, Task<AgentHost>> startAgent)

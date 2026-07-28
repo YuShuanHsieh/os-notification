@@ -165,8 +165,12 @@ public static class WindowsSettings
             AckSubject = Pick(getEnv("NOTIFY_ACK_SUBJECT"), file.AckSubject, "notify.ack.desktop"),
         };
 
+        // Enum.TryParse alone accepts arbitrary numeric strings like "99" or "-3" -- an
+        // out-of-range LogLevel value that silently disables all logging (LogLevel.None is
+        // 6; anything numeric outside 0-6 isn't a real level but still "parses"). Require
+        // the parsed value to actually be one of the defined enum members.
         var logLevelText = Pick(getEnv("NOTIFY_LOG_LEVEL"), file.LogLevel, "Information");
-        if (!Enum.TryParse<LogLevel>(logLevelText, ignoreCase: true, out var logLevel))
+        if (!Enum.TryParse<LogLevel>(logLevelText, ignoreCase: true, out var logLevel) || !Enum.IsDefined(logLevel))
         {
             diagnostics?.Add(new SettingsDiagnostic.LogLevelUnrecognized(logLevelText));
             logLevel = LogLevel.Information;

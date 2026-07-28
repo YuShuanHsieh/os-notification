@@ -125,6 +125,38 @@ public class WindowsSettingsTests
         Assert.Equal(LogLevel.Information, resolved.LogLevel);
     }
 
+    [Theory]
+    [InlineData("99")]
+    [InlineData("-3")]
+    public void Resolve_falls_back_to_information_when_log_level_is_an_out_of_range_number(string logLevelText)
+    {
+        // Enum.TryParse alone accepts any numeric string, including values outside the
+        // defined LogLevel range (0-6) -- e.g. "99" would silently become a LogLevel with no
+        // matching enum member, effectively disabling all logging. This must be treated the
+        // same as an unrecognized textual value: fall back to the default.
+        var file = new WindowsSettingsFile { LogLevel = logLevelText };
+        var diagnostics = new List<SettingsDiagnostic>();
+
+        var resolved = WindowsSettings.Resolve(file, NoEnv, diagnostics);
+
+        Assert.Equal(LogLevel.Information, resolved.LogLevel);
+        var diagnostic = Assert.Single(diagnostics);
+        var unrecognized = Assert.IsType<SettingsDiagnostic.LogLevelUnrecognized>(diagnostic);
+        Assert.Equal(logLevelText, unrecognized.LogLevelText);
+    }
+
+    [Fact]
+    public void Resolve_accepts_a_valid_numeric_log_level()
+    {
+        var file = new WindowsSettingsFile { LogLevel = "1" }; // LogLevel.Debug
+        var diagnostics = new List<SettingsDiagnostic>();
+
+        var resolved = WindowsSettings.Resolve(file, NoEnv, diagnostics);
+
+        Assert.Equal(LogLevel.Debug, resolved.LogLevel);
+        Assert.Empty(diagnostics);
+    }
+
     [Fact]
     public void LoadFile_falls_back_to_defaults_without_throwing_on_malformed_json()
     {
