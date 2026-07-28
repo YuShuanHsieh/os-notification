@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -60,6 +61,27 @@ func getEnvOr(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// redactedURL returns raw with any userinfo (username and/or password)
+// masked, for safe use in log output. A NATS URL can carry a credential
+// directly (e.g. "nats://user:password@host:4222" or a bare token as
+// "nats://token@host:4222"), and the settings file makes it more likely an
+// operator embeds one in natsUrl -- logging it verbatim would leak that
+// credential into whatever consumes these logs. Unlike net/url.URL's own
+// Redacted() method (which masks the password but deliberately leaves the
+// username visible), this masks both, since a bare-token userinfo carries
+// its secret in the username position. If raw doesn't parse as a URL, or
+// has no userinfo at all, it's returned unchanged -- there's nothing to
+// redact.
+func redactedURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	redacted := *u
+	redacted.User = url.UserPassword("***", "")
+	return redacted.Redacted()
 }
 
 // Production defaults for dedup/pipeline sizing (context/contracts-and-invariants.md).
@@ -213,7 +235,7 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 	if err != nil {
 		return nil, fmt.Errorf("host: connect nats: %w", err)
 	}
-	slog.Info("host: connected to nats", "natsUrl", opts.NatsURL)
+	slog.Info("host: connected to nats", "natsUrl", redactedURL(opts.NatsURL))
 
 	h := &Host{
 		nc:         nc,
