@@ -16,13 +16,13 @@ use windows::Win32::UI::Shell::{
     NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
-    GetMessageW, GetSystemMetrics, GetWindowLongPtrW, LoadCursorW, LoadImageW, PostMessageW,
-    RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu, TranslateMessage,
-    CREATESTRUCTW, GWLP_USERDATA, HICON, HMENU, IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR,
-    MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_LBUTTONUP, WM_NCCREATE, WM_NULL,
-    WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DispatchMessageW,
+    GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, LoadCursorW, LoadImageW,
+    PostMessageW, RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu,
+    TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, HICON, HMENU, IDC_ARROW, IMAGE_ICON,
+    LR_DEFAULTCOLOR, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_LBUTTONUP,
+    WM_NCCREATE, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
 const CLASS_NAME: &str = "NotifyAgentRustTrayWindow";
@@ -64,6 +64,10 @@ impl TrayHandle {
 
 struct TrayState {
     menu: HMENU,
+    /// Owned handle from `LoadImageW` (no `LR_SHARED`) -- must be released via `DestroyIcon`
+    /// once the tray icon is removed, on every path (see the `NIM_ADD` failure and `NIM_DELETE`
+    /// call sites).
+    icon: HICON,
     close_tx: tokio::sync::mpsc::UnboundedSender<()>,
     done_rx: std::cell::RefCell<Option<mpsc::Receiver<()>>>,
 }
@@ -125,8 +129,11 @@ pub fn create(
         AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())?;
         AppendMenuW(menu, MF_STRING, ID_MENU_CLOSE, &HSTRING::from("Close"))?;
 
+        let icon = load_tray_icon(hinstance)?;
+
         let state = Box::into_raw(Box::new(TrayState {
             menu,
+            icon,
             close_tx,
             done_rx: std::cell::RefCell::new(Some(done_rx)),
         }));
@@ -152,11 +159,14 @@ pub fn create(
             uID: TRAY_UID,
             uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage: WM_TRAYICON,
-            hIcon: load_tray_icon(hinstance)?,
+            hIcon: icon,
             ..Default::default()
         };
         set_tip(&mut data, BASE_TOOLTIP);
-        Shell_NotifyIconW(NIM_ADD, &data).ok()?;
+        if let Err(e) = Shell_NotifyIconW(NIM_ADD, &data).ok() {
+            let _ = DestroyIcon(icon);
+            return Err(e.into());
+        }
 
         Ok(TrayHandle(hwnd))
     }
@@ -228,6 +238,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ..Default::default()
             };
             let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+            let _ = DestroyIcon(state.icon);
             let _ = state.close_tx.send(());
             if let Some(done_rx) = state.done_rx.borrow_mut().take() {
                 std::thread::spawn(move || {
