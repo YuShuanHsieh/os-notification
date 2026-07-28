@@ -1,5 +1,14 @@
 #![windows_subsystem = "windows"]
 
+// Declared unconditionally (not under `#[cfg(windows)]`) so their pure logic
+// — settings-file parsing/precedence, username-to-user-id transformation and
+// validation — compiles and runs under `cargo test` on any platform,
+// including this Linux dev machine. Only the small pieces that actually need
+// a Windows API or a Windows-only env var (`LOCALAPPDATA`) are internally
+// gated; see each module's doc comment.
+mod settings;
+mod windows_identity;
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("notify-agent-windows only runs on Windows. Build with --target x86_64-pc-windows-gnu.");
@@ -15,12 +24,14 @@ mod win {
 
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
-    use notify_agent_core::host::{AgentConfig, AgentHost};
-    use notify_agent_core::identity::{AadTokenProvider, DeviceCodeIdentity, EnvIdentity, IdentityProvider};
+    use notify_agent_core::host::AgentHost;
+    use notify_agent_core::identity::{AadTokenProvider, DeviceCodeIdentity, IdentityProvider};
     use notify_agent_core::nats_auth::{
         CredsFileAuth, ExternalAuthServiceAuth, NatsAuthConfig, NatsAuthProvider, validate_auth_service_config,
     };
     use notify_agent_core::toast::{ToastRenderer, ToastRequest};
+    use crate::settings::{self, Settings};
+    use crate::windows_identity::WindowsUsernameIdentity;
     use windows::core::{HSTRING, w};
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
@@ -77,7 +88,23 @@ mod win {
 
     /// Stable per-install device id, SHARED with the C# head (same file), so
     /// acks correlate to one device regardless of which agent runs.
-    fn device_id() -> anyhow::Result<String> {
+    ///
+    /// Precedence matches every other setting: `NOTIFY_DEVICE_ID` env var (if
+    /// set and non-blank) > the settings file's `deviceId` (if non-blank) >
+    /// the id persisted below. An explicit override short-circuits the
+    /// persisted-file lookup entirely, so an operator pinning a device id via
+    /// either source doesn't also need to touch the device-id file by hand.
+    fn device_id(settings_device_id: Option<&str>) -> anyhow::Result<String> {
+        if let Ok(v) = std::env::var("NOTIFY_DEVICE_ID") {
+            if !v.trim().is_empty() {
+                return Ok(v);
+            }
+        }
+        if let Some(v) = settings_device_id {
+            if !v.trim().is_empty() {
+                return Ok(v.to_string());
+            }
+        }
         let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
             .join("DesktopNotificationAgent");
         std::fs::create_dir_all(&dir)?;
@@ -110,8 +137,13 @@ mod win {
         }
         register_aumid()?;
 
+        // Read the settings file before installing the log filter, since the
+        // filter itself can come from the file's `logLevel` (RUST_LOG still
+        // takes priority when set — see `settings::resolve_log_filter`).
+        let settings = settings::load();
+
         tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(settings::resolve_log_filter(&settings))
             .init();
 
         let (close_tx, close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -121,7 +153,7 @@ mod win {
         std::thread::spawn(move || {
             let result = tokio::runtime::Runtime::new()
                 .expect("failed to build tokio runtime")
-                .block_on(run_agent(close_rx, tray));
+                .block_on(run_agent(close_rx, tray, settings));
             if let Err(e) = result {
                 tracing::error!(error = %e, "agent failed to start or run");
                 tray.set_start_failed();
@@ -136,8 +168,12 @@ mod win {
     /// Starts the agent, then waits for either Ctrl+C or the tray's Close click before shutting
     /// down. On startup failure, flags the tray tooltip and returns — the tray/Close item stay
     /// usable with no `AgentHost` to dispose (matches the C# design's failure path).
-    async fn run_agent(mut close_rx: tokio::sync::mpsc::UnboundedReceiver<()>, tray: super::tray::TrayHandle) -> anyhow::Result<()> {
-        let host = match start_host().await {
+    async fn run_agent(
+        mut close_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+        tray: super::tray::TrayHandle,
+        settings: Settings,
+    ) -> anyhow::Result<()> {
+        let host = match start_host(&settings).await {
             Ok(host) => host,
             Err(e) => {
                 tray.set_start_failed();
@@ -152,15 +188,20 @@ mod win {
         host.shutdown().await
     }
 
-    async fn start_host() -> anyhow::Result<AgentHost> {
-        let config = AgentConfig::from_env();
+    async fn start_host(settings: &Settings) -> anyhow::Result<AgentHost> {
+        // Every std::env::var(...) here has moved to settings::resolved_str/opt, which
+        // layers the settings file underneath: env var (if set, non-blank) > settings
+        // file value (if non-blank) > built-in default (feature: app settings file).
+        let config = settings::agent_config(settings);
         let renderer: Arc<dyn ToastRenderer> = Arc::new(WindowsToastRenderer::new()?);
 
-        let client_id = std::env::var("NOTIFY_AAD_CLIENT_ID").ok().filter(|s| !s.trim().is_empty());
-        let tenant = std::env::var("NOTIFY_AAD_TENANT_ID").unwrap_or_else(|_| "organizations".into());
-        let auth_service_url = std::env::var("NOTIFY_NATS_AUTH_SERVICE_URL").ok().filter(|s| !s.trim().is_empty());
-        let auth_service_scope = std::env::var("NOTIFY_NATS_AUTH_SERVICE_SCOPE").ok().filter(|s| !s.trim().is_empty());
-        let creds_file = std::env::var("NOTIFY_NATS_CREDS_FILE").ok().filter(|s| !s.trim().is_empty());
+        let client_id = settings::resolved_opt("NOTIFY_AAD_CLIENT_ID", settings.aad_client_id.as_deref());
+        let tenant = settings::resolved_str("NOTIFY_AAD_TENANT_ID", settings.aad_tenant_id.as_deref(), "organizations");
+        let auth_service_url =
+            settings::resolved_opt("NOTIFY_NATS_AUTH_SERVICE_URL", settings.nats_auth_service_url.as_deref());
+        let auth_service_scope =
+            settings::resolved_opt("NOTIFY_NATS_AUTH_SERVICE_SCOPE", settings.nats_auth_service_scope.as_deref());
+        let creds_file = settings::resolved_opt("NOTIFY_NATS_CREDS_FILE", settings.nats_creds_file.as_deref());
 
         validate_auth_service_config(&NatsAuthConfig {
             auth_service_url: auth_service_url.clone(),
@@ -187,15 +228,20 @@ mod win {
                 Arc::new(DeviceCodeIdentity {
                     client_id: client_id.clone(),
                     tenant: tenant.clone(),
-                    device_id: device_id()?,
+                    device_id: device_id(settings.device_id.as_deref())?,
                     renderer: renderer.clone(),
                     extra_scopes,
                     refresh_token_sink: Some(refresh_token.clone()),
                 })
             }
             None => {
-                tracing::debug!("identity: mode = env (NOTIFY_USER_ID)");
-                Arc::new(EnvIdentity)
+                // Windows-heads-only default (feature: derive identity from the OS
+                // username) — a deliberate, documented exception to "the OS account
+                // name is never used as identity"; see
+                // context/contracts-and-invariants.md and windows_identity.rs. The
+                // console head's EnvIdentity (NOTIFY_USER_ID) is unaffected.
+                tracing::debug!("identity: mode = windows-username (no NOTIFY_AAD_CLIENT_ID)");
+                Arc::new(WindowsUsernameIdentity { device_id: device_id(settings.device_id.as_deref())? })
             }
         };
 

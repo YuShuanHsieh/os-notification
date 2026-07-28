@@ -8,6 +8,12 @@ anyhow = "1"
 async-trait = "0.1"
 chrono = "0.4"
 notify-agent-core = { path = "../notify-agent-core" }
+# Not re-exported from the notify-agent-core path dependency, even though core
+# depends on the same crates — Cargo dependencies aren't transitive across
+# crate boundaries, so the settings-file JSON (de)serialization here needs its
+# own direct dependency.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -29,6 +35,7 @@ windows = { version = "0.58", features = [
     "Win32_Security",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_System_WindowsProgramming", # GetUserNameW, for the default Windows-username identity
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
