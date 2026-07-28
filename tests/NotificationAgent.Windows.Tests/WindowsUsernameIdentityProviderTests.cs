@@ -26,20 +26,37 @@ public class WindowsUsernameIdentityProviderTests
     }
 
     [Theory]
-    [InlineData("j.doe")]
-    [InlineData("j*doe")]
-    [InlineData("j>doe")]
-    public async Task GetIdentityAsync_throws_when_username_contains_a_nats_subject_wildcard_char(string unsafeUsername)
+    [InlineData("John Doe", "u_john_doe")]
+    [InlineData("john.doe", "u_john_doe")]
+    [InlineData("user*name", "u_user_name")]
+    [InlineData("user>name", "u_user_name")]
+    public async Task GetIdentityAsync_sanitizes_unsafe_characters_instead_of_rejecting(
+        string rawUsername, string expectedUserId)
     {
-        var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => unsafeUsername);
+        // The confirmed-exploitable case ("John Doe") in particular: an unsanitized interior
+        // space would let the id split a NATS `SUB <subject> [queue-group] <sid>` line into
+        // subject + queue-group, silently misrouting the subscription.
+        var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => rawUsername);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => provider.GetIdentityAsync().AsTask());
+        var identity = await provider.GetIdentityAsync();
+
+        Assert.Equal(expectedUserId, identity.UserId);
     }
 
     [Fact]
     public async Task GetIdentityAsync_throws_when_username_resolves_to_empty()
     {
         var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => "   ");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => provider.GetIdentityAsync().AsTask());
+    }
+
+    [Theory]
+    [InlineData("***")]
+    [InlineData("...")]
+    public async Task GetIdentityAsync_throws_when_sanitization_leaves_no_usable_characters(string unsafeUsername)
+    {
+        var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => unsafeUsername);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => provider.GetIdentityAsync().AsTask());
     }

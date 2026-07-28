@@ -17,8 +17,6 @@ namespace NotificationAgent.Windows;
 /// still requires it, unchanged).</summary>
 public sealed class WindowsUsernameIdentityProvider : IIdentityProvider
 {
-    private static readonly char[] UnsafeSubjectChars = { '.', '*', '>' };
-
     private readonly Func<string> _getRawUsername;
     private readonly string? _deviceIdOverride;
     private readonly ILogger? _logger;
@@ -49,25 +47,36 @@ public sealed class WindowsUsernameIdentityProvider : IIdentityProvider
         // feeding straight into subject construction below, so defensively strip one anyway.
         var raw = _getRawUsername();
         var lastSeparator = raw.LastIndexOf('\\');
-        var username = (lastSeparator >= 0 ? raw[(lastSeparator + 1)..] : raw).Trim().ToLowerInvariant();
+        var candidate = (lastSeparator >= 0 ? raw[(lastSeparator + 1)..] : raw).Trim().ToLowerInvariant();
 
-        if (username.Length == 0)
+        if (candidate.Length == 0)
         {
             throw new InvalidOperationException("Windows username resolved to an empty value.");
         }
 
-        // Untrusted OS input feeding directly into "notify.user.{0}.desktop": an
-        // unvalidated '.', '*', or '>' could silently turn a per-user subscription into an
-        // accidental wildcard subscription receiving every user's events.
-        if (username.IndexOfAny(UnsafeSubjectChars) >= 0)
+        // Untrusted OS input feeding directly into "notify.user.{0}.desktop", which flows
+        // straight into the NATS wire protocol's whitespace-tokenized
+        // `SUB <subject> [queue-group] <sid>` line. Sanitize via an *allowlist*
+        // ([a-z0-9_-], everything else mapped to '_') rather than rejecting a denylist of
+        // characters: a denylist that only blocks '.'/'*'/'>' still lets an interior space
+        // through (Windows account names may legitimately contain spaces, e.g. "John Doe"),
+        // and the NATS server then parses everything after the space as a queue-group
+        // token, silently truncating the subject and misrouting the subscription with no
+        // error logged anywhere. This also stops hard-rejecting extremely common
+        // `first.last`-style Windows/AD usernames (sanitized to `first_last` instead) — this
+        // identity path is the only one available when no AAD client id is configured, so a
+        // hard rejection would otherwise leave those accounts with no way to run the agent.
+        var sanitized = new string(candidate
+            .Select(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' ? c : '_')
+            .ToArray());
+        if (sanitized.Length == 0 || sanitized.All(c => c == '_'))
         {
             throw new InvalidOperationException(
-                $"Windows username '{username}' contains a character reserved for NATS " +
-                "subject routing ('.', '*', or '>') and cannot safely be used to build a " +
-                "per-user subject.");
+                $"Windows username '{candidate}' has no usable characters for identity after " +
+                "sanitization.");
         }
 
-        var userId = $"u_{username}";
+        var userId = $"u_{sanitized}";
         var deviceId = DeviceIdStore.GetOrCreate(_deviceIdOverride);
         _logger?.IdentityResolvedWindowsUsername(userId, deviceId);
         return ValueTask.FromResult(new AgentIdentity(userId, deviceId));
