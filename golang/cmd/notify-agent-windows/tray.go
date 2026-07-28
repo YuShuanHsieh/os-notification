@@ -93,15 +93,19 @@ func (a *trayApp) startAgent() {
 	a.h.Store(h)
 }
 
-// watchClose waits for the Close menu item to be clicked, then hides the
-// icon, attempts a bounded graceful AgentHost.Shutdown, and force-exits the
-// process once that finishes or closeTimeout elapses, whichever is first —
-// mirroring tray.rs's WM_COMMAND/ID_MENU_CLOSE handler and
-// TrayApplicationContext.OnCloseClickedAsync.
+// watchClose waits for the Close menu item to be clicked, then attempts a
+// bounded graceful AgentHost.Shutdown (up to closeTimeout), then hides the
+// icon and force-exits the process — mirroring tray.rs's
+// WM_COMMAND/ID_MENU_CLOSE handler and TrayApplicationContext.OnCloseClickedAsync.
 func (a *trayApp) watchClose(closeItem *systray.MenuItem) {
 	<-closeItem.ClickedCh
-	systray.Quit() // hides the icon and tears down the message loop
 
+	// Run the bounded graceful shutdown to completion (or timeout) BEFORE
+	// calling systray.Quit(). systray.Quit() causes the blocking
+	// systray.Run() call in main()'s run() to return, which immediately
+	// hits os.Exit(0) there — if Quit() fired first, that race could exit
+	// the process before Shutdown ever got a chance to run, defeating the
+	// whole point of a graceful, bounded Close.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -116,5 +120,7 @@ func (a *trayApp) watchClose(closeItem *systray.MenuItem) {
 	case <-done:
 	case <-time.After(closeTimeout):
 	}
+
+	systray.Quit() // hides the icon and tears down the message loop
 	os.Exit(0)
 }

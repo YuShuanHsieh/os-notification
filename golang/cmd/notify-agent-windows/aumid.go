@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -46,9 +47,11 @@ func registerAUMID() error {
 // golang.org/x/sys/windows does not expose
 // SetCurrentProcessExplicitAppUserModelID, so it is called directly via
 // shell32.dll, same as the raw Win32 approach the Rust head's windows crate
-// wraps.
+// wraps. NewLazySystemDLL (rather than syscall.NewLazyDLL) constrains the
+// search to the Windows System directory instead of relying on the standard
+// library's internal, case-sensitive system-DLL allowlist for "shell32.dll".
 var (
-	modshell32                                  = syscall.NewLazyDLL("shell32.dll")
+	modshell32                                  = windows.NewLazySystemDLL("shell32.dll")
 	procSetCurrentProcessExplicitAppUserModelID = modshell32.NewProc("SetCurrentProcessExplicitAppUserModelID")
 )
 

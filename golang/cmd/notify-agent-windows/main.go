@@ -38,8 +38,14 @@ func main() {
 func run() int {
 	alreadyRunning, err := acquireSingleInstance()
 	if err != nil {
+		// Fail closed: an inconclusive single-instance check must not be
+		// treated as "not already running." Silently falling through here
+		// would defeat the entire purpose of the mutex guard, unlike the
+		// AUMID path below (which is explicitly cosmetic-only on failure).
 		fmt.Fprintf(os.Stderr, "notify-agent-windows: single-instance check failed: %v\n", err)
-	} else if alreadyRunning {
+		return 1
+	}
+	if alreadyRunning {
 		return 0
 	}
 
