@@ -24,6 +24,8 @@ import (
 	"sort"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/YuShuanHsieh/os-notification/golang/internal/httpsurl"
 )
 
@@ -64,6 +66,13 @@ type Cache struct {
 	dir     string
 	options Options
 	client  *http.Client
+
+	// group serializes concurrent Fetch calls for the same URL so two
+	// goroutines racing on the same avatar can't both miss the cache-file
+	// check and download/write the same path at once. Entries are removed
+	// once the in-flight call completes, so this never grows unboundedly
+	// the way a plain per-key mutex map would.
+	group singleflight.Group
 }
 
 // New returns a Cache rooted at dir using DefaultOptions.
@@ -97,20 +106,38 @@ func (c *Cache) Fetch(ctx context.Context, rawURL string) (string, bool) {
 		return "", false
 	}
 
-	fetchCtx, cancel := context.WithTimeout(ctx, c.timeout())
-	defer cancel()
-
-	path := filepath.Join(c.dir, hexSHA256(rawURL))
+	key := hexSHA256(rawURL)
+	path := filepath.Join(c.dir, key)
 
 	if _, err := os.Stat(path); err == nil {
 		return path, true
 	}
 
-	if err := c.download(fetchCtx, rawURL, path); err != nil {
+	// Concurrent Fetch calls for the same URL share one download: the
+	// singleflight group ensures only the first caller's function runs
+	// (and thus its ctx/timeout governs the shared download); every caller
+	// waiting on the same key gets that call's result rather than each
+	// racing to download/write the same path independently.
+	v, err, _ := c.group.Do(key, func() (any, error) {
+		// Re-check: another goroutine may have completed this exact fetch
+		// while we were waiting to become the leader for this key.
+		if _, statErr := os.Stat(path); statErr == nil {
+			return path, nil
+		}
+
+		fetchCtx, cancel := context.WithTimeout(ctx, c.timeout())
+		defer cancel()
+
+		if dlErr := c.download(fetchCtx, rawURL, path); dlErr != nil {
+			return "", dlErr
+		}
+		c.evictBeyondCap()
+		return path, nil
+	})
+	if err != nil {
 		return "", false
 	}
-	c.evictBeyondCap()
-	return path, true
+	return v.(string), true
 }
 
 func (c *Cache) timeout() time.Duration {

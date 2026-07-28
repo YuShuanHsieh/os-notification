@@ -22,4 +22,5 @@ require (
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
 )

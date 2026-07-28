@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -194,5 +196,55 @@ func TestFetch_RejectsInvalidURL(t *testing.T) {
 	}
 	if _, ok := cache.Fetch(context.Background(), ""); ok {
 		t.Fatal("expected empty URL to be rejected")
+	}
+}
+
+// TestFetch_ConcurrentFetchesForSameURLDownloadOnce proves the singleflight
+// fix: without per-key serialization, N goroutines racing on the same URL
+// could all miss the os.Stat cache check and each independently download and
+// write to the same path. This asserts the server is hit exactly once and
+// every caller still gets a valid, identical result.
+func TestFetch_ConcurrentFetchesForSameURLDownloadOnce(t *testing.T) {
+	var hits int64
+	srv, client := httpsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		// Give concurrent callers a real window to race in.
+		time.Sleep(20 * time.Millisecond)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("PNGDATA"))
+	})
+
+	dir := t.TempDir()
+	cache := NewWithOptions(dir, Options{HTTPClient: client})
+
+	const concurrency = 20
+	var wg sync.WaitGroup
+	results := make([]string, concurrency)
+	oks := make([]bool, concurrency)
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], oks[i] = cache.Fetch(context.Background(), srv.URL+"/img.png")
+		}(i)
+	}
+	wg.Wait()
+
+	for i := range oks {
+		if !oks[i] {
+			t.Fatalf("goroutine %d: Fetch failed", i)
+		}
+		if results[i] != results[0] {
+			t.Fatalf("goroutine %d: path = %q, want same path as goroutine 0 (%q)", i, results[i], results[0])
+		}
+	}
+
+	if got := atomic.LoadInt64(&hits); got != 1 {
+		t.Fatalf("server hit %d times, want exactly 1 (concurrent fetches for the same URL must not each download independently)", got)
+	}
+
+	data, err := os.ReadFile(results[0])
+	if err != nil || string(data) != "PNGDATA" {
+		t.Fatalf("unexpected cached content: %q, err=%v", data, err)
 	}
 }
