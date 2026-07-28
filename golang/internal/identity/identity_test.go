@@ -86,6 +86,21 @@ func TestEnvIdentityResolveErrorsWhenUserIDUnset(t *testing.T) {
 	}
 }
 
+func TestEnvIdentityResolveTrimsSurroundingWhitespace(t *testing.T) {
+	t.Setenv("NOTIFY_USER_ID", "  u_demo  ")
+	t.Setenv("NOTIFY_DEVICE_ID", "\td-test\n")
+
+	got, err := (EnvIdentity{}).Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve() error = %v, want nil", err)
+	}
+
+	want := Identity{UserID: "u_demo", DeviceID: "d-test"}
+	if got != want {
+		t.Fatalf("Resolve() = %+v, want %+v (surrounding whitespace must be trimmed)", got, want)
+	}
+}
+
 func TestEnvIdentityResolveErrorsWhenUserIDBlank(t *testing.T) {
 	t.Setenv("NOTIFY_USER_ID", "   ")
 	t.Setenv("NOTIFY_DEVICE_ID", "d-test")

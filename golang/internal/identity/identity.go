@@ -29,13 +29,13 @@ type EnvIdentity struct{}
 
 // Resolve implements Provider.
 func (EnvIdentity) Resolve(ctx context.Context) (Identity, error) {
-	userID := os.Getenv("NOTIFY_USER_ID")
-	if strings.TrimSpace(userID) == "" {
+	userID := strings.TrimSpace(os.Getenv("NOTIFY_USER_ID"))
+	if userID == "" {
 		return Identity{}, fmt.Errorf("NOTIFY_USER_ID is not set")
 	}
 
-	deviceID := os.Getenv("NOTIFY_DEVICE_ID")
-	if strings.TrimSpace(deviceID) == "" {
+	deviceID := strings.TrimSpace(os.Getenv("NOTIFY_DEVICE_ID"))
+	if deviceID == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
 			return Identity{}, fmt.Errorf("resolve device id: %w", err)
