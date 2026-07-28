@@ -88,10 +88,11 @@ mod win {
         use windows::core::PWSTR;
         use windows::Win32::System::WindowsProgramming::GetUserNameW;
 
-        // UNLEN (256) + 1 is the documented maximum Windows username length;
-        // comfortably oversized here since GetUserNameW reports the actual
-        // length used either way.
-        let mut buf = [0u16; 256];
+        // UNLEN (256) + 1 (for the trailing NUL `GetUserNameW` writes) is the
+        // documented maximum buffer size a UNLEN-length username needs; a
+        // 256-element buffer was one short of that and would fail a
+        // maximum-length username with ERROR_INSUFFICIENT_BUFFER.
+        let mut buf = [0u16; 257];
         let mut len: u32 = buf.len() as u32;
         unsafe {
             GetUserNameW(PWSTR(buf.as_mut_ptr()), &mut len)
