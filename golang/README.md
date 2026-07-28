@@ -130,7 +130,7 @@ The compiled `.exe` itself also carries this same icon as its Win32 resource (Ex
 
 ```bash
 cd golang/cmd/notify-agent-windows
-go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
 goversioninfo -icon=assets/app.ico -o=resource_windows_amd64.syso versioninfo.json
 ```
 

@@ -4,11 +4,11 @@
 // win when set (see Resolve* below) -- the file only fills in what the
 // environment doesn't specify.
 //
-// This file has no `//go:build windows` constraint, unlike settings_windows.go
-// (which resolves the real %LOCALAPPDATA%-based file path): the JSON
-// parsing and precedence logic here does nothing OS-specific, so it stays
-// unit-testable on any platform, same as toastscript.go's split for the
-// PowerShell script builder.
+// This file has no `//go:build windows` constraint, unlike renderer.go's
+// defaultAppDataDir/defaultSettingsFilePath (which resolve the real
+// %LOCALAPPDATA%-based file path): the JSON parsing and precedence logic
+// here does nothing OS-specific, so it stays unit-testable on any platform,
+// same as toastscript.go's split for the PowerShell script builder.
 package main
 
 import (

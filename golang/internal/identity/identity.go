@@ -1,5 +1,10 @@
 // Package identity resolves the immutable application user ID and device ID
-// (design §8). The OS account name is never used as identity.
+// (design §8). The OS account name is never used as identity -- except for
+// one deliberate, documented exception: the Go Windows head
+// (cmd/notify-agent-windows) has no AAD/device-code identity path at all, so
+// it derives its identity.Provider unconditionally from the Windows account
+// name (see cmd/notify-agent-windows/identity.go and identity_windows.go);
+// every other provider in this package follows the rule as stated above.
 package identity
 
 import (
