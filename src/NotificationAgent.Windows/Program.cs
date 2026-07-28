@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NotificationAgent.Core.Hosting;
 using NotificationAgent.Core.Identity;
 using NotificationAgent.Windows;
@@ -17,23 +18,48 @@ if (!isFirstInstance)
     return;
 }
 
-var options = AgentOptions.FromEnvironment();
-var clientId = Environment.GetEnvironmentVariable("NOTIFY_AAD_CLIENT_ID")?.Trim();
-var tenantId = Environment.GetEnvironmentVariable("NOTIFY_AAD_TENANT_ID")?.Trim();
+// Feature: app settings file. %LOCALAPPDATA%\DesktopNotificationAgent\settings.json is
+// optional; env vars still win over it, and built-in defaults apply when neither is set
+// (WindowsSettings.Resolve owns the per-field precedence).
+var settingsPath = WindowsSettings.DefaultPath;
+var settingsFileExists = File.Exists(settingsPath);
+var settingsFile = WindowsSettings.LoadFile(settingsPath);
+var settings = WindowsSettings.Resolve(settingsFile, Environment.GetEnvironmentVariable);
+
+using var loggerFactory = LoggerFactory.Create(builder => builder
+    .AddSimpleConsole(o => o.SingleLine = true)
+    .SetMinimumLevel(settings.LogLevel));
+var startupLogger = loggerFactory.CreateLogger("Startup");
+startupLogger.StartupSettingsFile(settingsPath, settingsFileExists);
+
+var options = settings.Options;
+var clientId = settings.AadClientId;
 MsalIdentityProvider? msalIdentity =
     clientId is { Length: > 0 }
         ? new MsalIdentityProvider(
             clientId,
-            tenantId is { Length: > 0 } ? tenantId : "organizations")
+            settings.AadTenantId,
+            settings.DeviceId,
+            loggerFactory.CreateLogger<MsalIdentityProvider>())
         : null;
-IIdentityProvider identity = (IIdentityProvider?)msalIdentity ?? new EnvironmentIdentityProvider();
+
+// Feature: derive default Windows identity from the OS username. NOTIFY_USER_ID is no
+// longer read or required by the Windows head — EnvironmentIdentityProvider (which
+// requires it) remains exclusively the console/dev host's identity source.
+IIdentityProvider identity = (IIdentityProvider?)msalIdentity ?? new WindowsUsernameIdentityProvider(
+    settings.DeviceId,
+    loggerFactory.CreateLogger<WindowsUsernameIdentityProvider>());
 
 var authProvider = NatsAuthSelection.Select(
-    Environment.GetEnvironmentVariable("NOTIFY_NATS_AUTH_SERVICE_URL")?.Trim(),
-    Environment.GetEnvironmentVariable("NOTIFY_NATS_AUTH_SERVICE_SCOPE")?.Trim(),
-    Environment.GetEnvironmentVariable("NOTIFY_NATS_CREDS_FILE")?.Trim(),
+    settings.NatsAuthServiceUrl,
+    settings.NatsAuthServiceScope,
+    settings.NatsCredsFile,
     msalIdentity,
-    new HttpClient());
+    new HttpClient(),
+    loggerFactory.CreateLogger("NatsAuthSelection"));
+
+startupLogger.StartupConfigurationResolved(options.NatsUrl, options.SubjectTemplate);
 
 Application.Run(new TrayApplicationContext(
-    ct => AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider, ct)));
+    ct => AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider, ct),
+    loggerFactory.CreateLogger<TrayApplicationContext>()));
