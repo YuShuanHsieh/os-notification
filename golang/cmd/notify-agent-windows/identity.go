@@ -21,20 +21,28 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
 )
 
 // userIDFromWindowsUsername normalizes a raw Windows username (as returned
 // by GetUserNameW, which may be qualified as "DOMAIN\username") into this
 // product's "u_{...}" identity shape -- lowercased, matching the shape
-// other identity sources in this product use (e.g. "u_{oid}" for AAD) -- and
-// validates the result is safe to embed in a NATS subject.
+// other identity sources in this product use (e.g. "u_{oid}" for AAD) --
+// and sanitizes it to be safe to embed in a NATS subject.
 //
-// The validation replicates internal/host's unexported
-// validateUserIDForSubject check (added there after a security review to
-// reject '.', '*', '>' before a resolved user ID is substituted into a
-// subject template like "notify.user.%s.desktop"): that function isn't
-// exported for reuse across packages, so the same check is duplicated here
-// rather than importing internal/host purely for it.
+// Windows account names are not under this product's control and commonly
+// contain characters a NATS subject can't safely carry -- a space ("John
+// Doe") or a dot ("john.doe", an extremely common shape in Windows/AD
+// environments) are both completely ordinary account names, not edge cases.
+// Since this head has no alternative identity path (no AAD, no
+// NOTIFY_USER_ID), rejecting such a username outright would leave that user
+// with no way to run the agent at all. So, unlike a resolved user ID from an
+// arbitrary source (which internal/host.ValidateUserIDForSubject rejects
+// outright as a final safety net), a raw OS username is sanitized via
+// internal/host.SanitizeForSubject instead -- replacing every character
+// outside [a-z0-9_-] with '_' -- rather than duplicating that character-class
+// logic here.
 func userIDFromWindowsUsername(raw string) (string, error) {
 	name := raw
 	if idx := strings.LastIndexByte(name, '\\'); idx >= 0 {
@@ -45,11 +53,11 @@ func userIDFromWindowsUsername(raw string) (string, error) {
 		return "", fmt.Errorf("windows username %q is empty after stripping any domain prefix", raw)
 	}
 
-	userID := "u_" + strings.ToLower(name)
-	if strings.ContainsAny(userID, ".*>") {
-		return "", fmt.Errorf("resolved user ID %q must not contain NATS subject wildcard/delimiter characters ('.', '*', '>')", userID)
+	sanitized := host.SanitizeForSubject(strings.ToLower(name))
+	if sanitized == "" || strings.Trim(sanitized, "_") == "" {
+		return "", fmt.Errorf("windows username %q has no usable characters after sanitization", raw)
 	}
-	return userID, nil
+	return "u_" + sanitized, nil
 }
 
 // defaultWindowsDeviceID returns "d-{lowercase hostname}", the same default
