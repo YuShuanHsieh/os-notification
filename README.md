@@ -50,10 +50,11 @@ IToastRenderer ──► ack: submitted_to_windows ──► NATS notify.ack.des
 
 ### Identity
 
-The Windows account name is never used as identity. `IIdentityProvider` resolves the application user ID and device ID:
+`IIdentityProvider` resolves the application user ID and device ID. The Windows account name itself is not used as identity for the primary paths (AAD/MSAL sign-in, or the console host's environment-variable identity):
 
-- **Windows (production):** `MsalIdentityProvider` — WAM-brokered silent MSAL sign-in; user ID is the Entra object ID (`u_{oid}`), device ID is a stable per-install GUID under `%LOCALAPPDATA%\DesktopNotificationAgent`.
-- **Dev/Linux:** `EnvironmentIdentityProvider` — reads `NOTIFY_USER_ID` (required) and `NOTIFY_DEVICE_ID` (defaults to `d-{machinename}`).
+- **Windows (AAD, when `NOTIFY_AAD_CLIENT_ID` is set):** `MsalIdentityProvider` — WAM-brokered silent MSAL sign-in; user ID is the Entra object ID (`u_{oid}`), device ID is a stable per-install GUID under `%LOCALAPPDATA%\DesktopNotificationAgent`.
+- **Windows (default, no AAD configured):** `WindowsUsernameIdentityProvider` — a deliberate, narrow exception derives the user ID from the signed-in Windows username instead (`u_{lowercased username}`), so `NOTIFY_USER_ID` is no longer required (or read) by the Windows head. The username is rejected if it contains `.`, `*`, or `>` (NATS subject wildcard/delimiter characters), since an unvalidated value could otherwise turn a per-user subscription into an accidental wildcard subscription.
+- **Console/dev (Linux):** `EnvironmentIdentityProvider` — reads `NOTIFY_USER_ID` (required) and `NOTIFY_DEVICE_ID` (defaults to `d-{machinename}`). Unchanged; still the only identity source for `NotificationAgent.ConsoleHost`.
 
 ### Wire contracts
 
@@ -105,10 +106,11 @@ dotnet test tests/NotificationAgent.Windows.Tests
 | `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | Both hosts: path to a NATS `.creds` file |
 | `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | Windows: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
 | `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | Windows: AAD scope requested when calling the auth service |
-| `NOTIFY_USER_ID` | *(required in dev)* | `EnvironmentIdentityProvider` |
-| `NOTIFY_DEVICE_ID` | `d-{machinename}` | `EnvironmentIdentityProvider` |
-| `NOTIFY_AAD_CLIENT_ID` | *(unset → env identity)* | Windows head: enables MSAL/WAM |
+| `NOTIFY_USER_ID` | *(required in dev)* | `EnvironmentIdentityProvider` (`NotificationAgent.ConsoleHost`). **Not read by the Windows head** — see "Identity" above and the settings-file section below |
+| `NOTIFY_DEVICE_ID` | `d-{machinename}` | `EnvironmentIdentityProvider`; the Windows head also accepts it (or the settings file's `deviceId`) to override the persisted per-install device id file |
+| `NOTIFY_AAD_CLIENT_ID` | *(unset → Windows-username identity)* | Windows head: enables MSAL/WAM |
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | Windows head (with client ID) |
+| `NOTIFY_LOG_LEVEL` | `Information` | Windows head only: minimum log level (`Trace`/`Debug`/`Information`/`Warning`/`Error`/`Critical`/`None`) |
 
 `NOTIFY_NATS_URL` also accepts a `wss://` (NATS WebSocket) URL — the NATS client
 detects the transport from the URL scheme automatically, so no other configuration
@@ -119,6 +121,33 @@ NATS auth is selected presence-based, same style as identity: on Windows,
 `NOTIFY_NATS_AUTH_SERVICE_SCOPE`) takes priority over `NOTIFY_NATS_CREDS_FILE`,
 which both hosts support; if neither is set, the connection is unauthenticated
 (today's default).
+
+### App settings file (Windows only)
+
+The Windows head also reads an optional JSON settings file at
+`%LOCALAPPDATA%\DesktopNotificationAgent\settings.json`, so a deployed agent can be
+configured without setting environment variables. Every field is optional:
+
+```json
+{
+  "natsUrl": "nats://127.0.0.1:4222",
+  "subjectTemplate": "notify.user.{0}.desktop",
+  "ackSubject": "notify.ack.desktop",
+  "natsCredsFile": "",
+  "natsAuthServiceUrl": "",
+  "natsAuthServiceScope": "",
+  "aadClientId": "",
+  "aadTenantId": "organizations",
+  "deviceId": "",
+  "logLevel": "Information"
+}
+```
+
+Precedence per field is **environment variable (if set and non-blank) > settings
+file value (if present and non-blank) > built-in default**. A missing file is
+normal — it is never created or required — and a malformed file logs a warning and
+falls back to defaults rather than crashing startup. This file is specific to the
+C# Windows head; the console host and the Rust/Go Windows heads are unaffected.
 
 ## How to use
 
@@ -148,21 +177,25 @@ The agent prints an `observed_by_agent` ack per event immediately, batches the t
 ```powershell
 dotnet build src/NotificationAgent.Windows
 $env:NOTIFY_NATS_URL = "nats://your-nats-host:4222"
-# Either dev identity...
-$env:NOTIFY_USER_ID = "u_demo"
-# ...or real Entra identity via WAM:
+# Default: no AAD client id, so identity is derived from the signed-in Windows
+# username instead (`u_{lowercased username}`) -- NOTIFY_USER_ID is not read here.
+# ...or use real Entra identity via WAM instead:
 # $env:NOTIFY_AAD_CLIENT_ID = "<app registration client id>"
 # $env:NOTIFY_AAD_TENANT_ID = "<tenant id>"    # optional, defaults to "organizations"
 dotnet run --project src/NotificationAgent.Windows
 ```
 
-It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `Microsoft.Toolkit.Uwp.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It has no additional notification runtime dependency.
+The console logs the resolved subject at startup (`Information` level, e.g. "Agent
+started successfully; subscribed to subject notify.user.u_jdoe.desktop") — use that
+exact user ID when targeting `TestPublisher` at this agent below.
+
+It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `Microsoft.Toolkit.Uwp.Notifications`, uses Windows protocol activation to open a validated HTTPS action URL in the default browser, and shows a custom tray/exe icon (`src/NotificationAgent.Windows/app.ico`, embedded into the `.exe` via `<ApplicationIcon>` and reused for the tray `NotifyIcon`). It has no additional notification runtime dependency.
 
 `Microsoft.Toolkit.Uwp.Notifications` 7.1.3 is retained as an explicit legacy compatibility dependency because it supports unpackaged desktop notifications without introducing the Windows App SDK runtime. Revisit this choice when a maintained alternative provides the same standalone deployment model.
 
 ### Verify the avatar image renders correctly (Windows)
 
-With the Windows head running (above) and pointed at a NATS server reachable from wherever you run `TestPublisher` (the same machine, or any box that can reach `NOTIFY_NATS_URL`), publish one event with an image URL to reproduce a Teams-presence-style toast (circular avatar + two-line text):
+With the Windows head running (above) and pointed at a NATS server reachable from wherever you run `TestPublisher` (the same machine, or any box that can reach `NOTIFY_NATS_URL`), publish one event with an image URL to reproduce a Teams-presence-style toast (circular avatar + two-line text). Replace `u_demo` below with the user ID the Windows head actually logged at startup (see above) unless you set `NOTIFY_AAD_CLIENT_ID`/a real sign-in:
 
 ```bash
 dotnet run --project tools/TestPublisher -- u_demo "Tony Redmond" "is now available" critical 1 "https://i.pravatar.cc/300"
