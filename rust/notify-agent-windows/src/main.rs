@@ -11,7 +11,9 @@ mod windows_identity;
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("notify-agent-windows only runs on Windows. Build with --target x86_64-pc-windows-gnu.");
+    eprintln!(
+        "notify-agent-windows only runs on Windows. Build with --target x86_64-pc-windows-gnu."
+    );
     std::process::exit(2);
 }
 
@@ -22,21 +24,22 @@ mod tray;
 mod win {
     use std::sync::Arc;
 
+    use crate::settings::{self, Settings};
+    use crate::windows_identity::WindowsUsernameIdentity;
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use notify_agent_core::host::AgentHost;
     use notify_agent_core::identity::{AadTokenProvider, DeviceCodeIdentity, IdentityProvider};
     use notify_agent_core::nats_auth::{
-        CredsFileAuth, ExternalAuthServiceAuth, NatsAuthConfig, NatsAuthProvider, validate_auth_service_config,
+        validate_auth_service_config, CredsFileAuth, ExternalAuthServiceAuth, NatsAuthConfig,
+        NatsAuthProvider,
     };
     use notify_agent_core::toast::{ToastRenderer, ToastRequest};
-    use crate::settings::{self, Settings};
-    use crate::windows_identity::WindowsUsernameIdentity;
-    use windows::core::{HSTRING, w};
+    use windows::core::{w, HSTRING};
     use windows::Data::Xml::Dom::XmlDocument;
-    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 
     /// Unpackaged-app AppUserModelID; registered per-user in HKCU on first
     /// run (the WinAppSDK Register() substitute — design §6 of the Rust spec).
@@ -58,7 +61,9 @@ mod win {
             let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
                 .join("DesktopNotificationAgent")
                 .join("image-cache");
-            Ok(Self { cache: notify_agent_core::image_cache::ImageCache::new(dir) })
+            Ok(Self {
+                cache: notify_agent_core::image_cache::ImageCache::new(dir),
+            })
         }
     }
 
@@ -115,8 +120,12 @@ mod win {
                 return Ok(existing);
             }
         }
-        let id = format!("d-{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_nanos());
+        let id = format!(
+            "d-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        );
         std::fs::write(&path, &id)?;
         Ok(id)
     }
@@ -195,13 +204,25 @@ mod win {
         let config = settings::agent_config(settings);
         let renderer: Arc<dyn ToastRenderer> = Arc::new(WindowsToastRenderer::new()?);
 
-        let client_id = settings::resolved_opt("NOTIFY_AAD_CLIENT_ID", settings.aad_client_id.as_deref());
-        let tenant = settings::resolved_str("NOTIFY_AAD_TENANT_ID", settings.aad_tenant_id.as_deref(), "organizations");
-        let auth_service_url =
-            settings::resolved_opt("NOTIFY_NATS_AUTH_SERVICE_URL", settings.nats_auth_service_url.as_deref());
-        let auth_service_scope =
-            settings::resolved_opt("NOTIFY_NATS_AUTH_SERVICE_SCOPE", settings.nats_auth_service_scope.as_deref());
-        let creds_file = settings::resolved_opt("NOTIFY_NATS_CREDS_FILE", settings.nats_creds_file.as_deref());
+        let client_id =
+            settings::resolved_opt("NOTIFY_AAD_CLIENT_ID", settings.aad_client_id.as_deref());
+        let tenant = settings::resolved_str(
+            "NOTIFY_AAD_TENANT_ID",
+            settings.aad_tenant_id.as_deref(),
+            "organizations",
+        );
+        let auth_service_url = settings::resolved_opt(
+            "NOTIFY_NATS_AUTH_SERVICE_URL",
+            settings.nats_auth_service_url.as_deref(),
+        );
+        let auth_service_scope = settings::resolved_opt(
+            "NOTIFY_NATS_AUTH_SERVICE_SCOPE",
+            settings.nats_auth_service_scope.as_deref(),
+        );
+        let creds_file = settings::resolved_opt(
+            "NOTIFY_NATS_CREDS_FILE",
+            settings.nats_creds_file.as_deref(),
+        );
 
         validate_auth_service_config(&NatsAuthConfig {
             auth_service_url: auth_service_url.clone(),
@@ -216,7 +237,8 @@ mod win {
             "nats auth: startup config resolved"
         );
 
-        let refresh_token: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
+        let refresh_token: Arc<tokio::sync::Mutex<Option<String>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
         let extra_scopes = match &auth_service_scope {
             Some(scope) if auth_service_url.is_some() => vec![scope.clone()],
             _ => Vec::new(),
@@ -241,7 +263,9 @@ mod win {
                 // context/contracts-and-invariants.md and windows_identity.rs. The
                 // console head's EnvIdentity (NOTIFY_USER_ID) is unaffected.
                 tracing::debug!("identity: mode = windows-username (no NOTIFY_AAD_CLIENT_ID)");
-                Arc::new(WindowsUsernameIdentity { device_id: device_id(settings.device_id.as_deref())? })
+                Arc::new(WindowsUsernameIdentity {
+                    device_id: device_id(settings.device_id.as_deref())?,
+                })
             }
         };
 

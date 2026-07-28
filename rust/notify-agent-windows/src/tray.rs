@@ -21,8 +21,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostMessageW, RegisterClassExW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu,
     TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, HICON, HMENU, IDC_ARROW, IMAGE_ICON,
     LR_DEFAULTCOLOR, MF_DISABLED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_LBUTTONUP,
-    WM_NCCREATE, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_LBUTTONUP, WM_NCCREATE,
+    WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
 const CLASS_NAME: &str = "NotifyAgentRustTrayWindow";
@@ -86,7 +86,14 @@ fn load_tray_icon(hinstance: HINSTANCE) -> anyhow::Result<HICON> {
     unsafe {
         let cx = GetSystemMetrics(SM_CXSMICON);
         let cy = GetSystemMetrics(SM_CYSMICON);
-        let handle = LoadImageW(hinstance, PCWSTR(APP_ICON_ID as _), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR)?;
+        let handle = LoadImageW(
+            hinstance,
+            PCWSTR(APP_ICON_ID as _),
+            IMAGE_ICON,
+            cx,
+            cy,
+            LR_DEFAULTCOLOR,
+        )?;
         Ok(HICON(handle.0))
     }
 }

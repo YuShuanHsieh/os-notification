@@ -63,8 +63,8 @@ mod win {
     /// process's own environment), and it is the literal Win32 API this
     /// feature asked for.
     fn current_windows_username() -> anyhow::Result<String> {
-        use windows::Win32::System::WindowsProgramming::GetUserNameW;
         use windows::core::PWSTR;
+        use windows::Win32::System::WindowsProgramming::GetUserNameW;
 
         // UNLEN (256) + 1 is the documented maximum Windows username length;
         // comfortably oversized here since GetUserNameW reports the actual
@@ -92,7 +92,10 @@ mod win {
         async fn identity(&self) -> anyhow::Result<AgentIdentity> {
             let username = current_windows_username()?;
             let user_id = user_id_from_username(&username)?;
-            Ok(AgentIdentity { user_id, device_id: self.device_id.clone() })
+            Ok(AgentIdentity {
+                user_id,
+                device_id: self.device_id.clone(),
+            })
         }
     }
 }

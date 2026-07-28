@@ -106,7 +106,10 @@ pub fn resolved_opt(env_var: &str, file_value: Option<&str>) -> Option<String> {
             return Some(v);
         }
     }
-    file_value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    file_value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Builds an `AgentConfig` by layering settings-file values under
@@ -114,7 +117,11 @@ pub fn resolved_opt(env_var: &str, file_value: Option<&str>) -> Option<String> {
 /// `AgentConfig::from_env`).
 pub fn agent_config(settings: &Settings) -> AgentConfig {
     AgentConfig {
-        nats_url: resolved_str("NOTIFY_NATS_URL", settings.nats_url.as_deref(), "nats://127.0.0.1:4222"),
+        nats_url: resolved_str(
+            "NOTIFY_NATS_URL",
+            settings.nats_url.as_deref(),
+            "nats://127.0.0.1:4222",
+        ),
         subject_template: resolved_str(
             "NOTIFY_SUBJECT_TEMPLATE",
             settings.subject_template.as_deref(),
@@ -122,7 +129,11 @@ pub fn agent_config(settings: &Settings) -> AgentConfig {
             // deliberately not "{}" (see module docs).
             "notify.user.{0}.desktop",
         ),
-        ack_subject: resolved_str("NOTIFY_ACK_SUBJECT", settings.ack_subject.as_deref(), "notify.ack.desktop"),
+        ack_subject: resolved_str(
+            "NOTIFY_ACK_SUBJECT",
+            settings.ack_subject.as_deref(),
+            "notify.ack.desktop",
+        ),
     }
 }
 
@@ -199,11 +210,20 @@ mod tests {
         }"#;
         let settings = parse(json).unwrap();
         assert_eq!(settings.nats_url.as_deref(), Some("nats://example:4222"));
-        assert_eq!(settings.subject_template.as_deref(), Some("notify.user.{0}.custom"));
+        assert_eq!(
+            settings.subject_template.as_deref(),
+            Some("notify.user.{0}.custom")
+        );
         assert_eq!(settings.ack_subject.as_deref(), Some("notify.ack.custom"));
         assert_eq!(settings.nats_creds_file.as_deref(), Some("/creds/file"));
-        assert_eq!(settings.nats_auth_service_url.as_deref(), Some("https://auth.example/token"));
-        assert_eq!(settings.nats_auth_service_scope.as_deref(), Some("api://x/Scope"));
+        assert_eq!(
+            settings.nats_auth_service_url.as_deref(),
+            Some("https://auth.example/token")
+        );
+        assert_eq!(
+            settings.nats_auth_service_scope.as_deref(),
+            Some("api://x/Scope")
+        );
         assert_eq!(settings.aad_client_id.as_deref(), Some("client-1"));
         assert_eq!(settings.aad_tenant_id.as_deref(), Some("tenant-1"));
         assert_eq!(settings.device_id.as_deref(), Some("d-fixed"));
@@ -241,7 +261,10 @@ mod tests {
     fn default_wins_when_neither_env_nor_file_set() {
         let _guard = ENV_LOCK.lock().unwrap();
         clear(&["NOTIFY_TEST_PRECEDENCE"]);
-        assert_eq!(resolved_str("NOTIFY_TEST_PRECEDENCE", None, "from-default"), "from-default");
+        assert_eq!(
+            resolved_str("NOTIFY_TEST_PRECEDENCE", None, "from-default"),
+            "from-default"
+        );
     }
 
     #[test]
@@ -276,7 +299,11 @@ mod tests {
     #[test]
     fn agent_config_uses_defaults_when_nothing_set() {
         let _guard = ENV_LOCK.lock().unwrap();
-        clear(&["NOTIFY_NATS_URL", "NOTIFY_SUBJECT_TEMPLATE", "NOTIFY_ACK_SUBJECT"]);
+        clear(&[
+            "NOTIFY_NATS_URL",
+            "NOTIFY_SUBJECT_TEMPLATE",
+            "NOTIFY_ACK_SUBJECT",
+        ]);
         let config = agent_config(&Settings::default());
         assert_eq!(config.nats_url, "nats://127.0.0.1:4222");
         assert_eq!(config.subject_template, "notify.user.{0}.desktop");
@@ -286,7 +313,11 @@ mod tests {
     #[test]
     fn agent_config_uses_file_values_when_env_unset() {
         let _guard = ENV_LOCK.lock().unwrap();
-        clear(&["NOTIFY_NATS_URL", "NOTIFY_SUBJECT_TEMPLATE", "NOTIFY_ACK_SUBJECT"]);
+        clear(&[
+            "NOTIFY_NATS_URL",
+            "NOTIFY_SUBJECT_TEMPLATE",
+            "NOTIFY_ACK_SUBJECT",
+        ]);
         let settings = Settings {
             nats_url: Some("nats://from-file:4222".into()),
             ..Settings::default()
@@ -297,7 +328,11 @@ mod tests {
     #[test]
     fn agent_config_env_overrides_file() {
         let _guard = ENV_LOCK.lock().unwrap();
-        clear(&["NOTIFY_NATS_URL", "NOTIFY_SUBJECT_TEMPLATE", "NOTIFY_ACK_SUBJECT"]);
+        clear(&[
+            "NOTIFY_NATS_URL",
+            "NOTIFY_SUBJECT_TEMPLATE",
+            "NOTIFY_ACK_SUBJECT",
+        ]);
         std::env::set_var("NOTIFY_NATS_URL", "nats://from-env:4222");
         let settings = Settings {
             nats_url: Some("nats://from-file:4222".into()),
@@ -314,7 +349,10 @@ mod tests {
 
         assert_eq!(resolve_log_directive(&Settings::default()), "info");
 
-        let settings = Settings { log_level: Some("debug".into()), ..Settings::default() };
+        let settings = Settings {
+            log_level: Some("debug".into()),
+            ..Settings::default()
+        };
         assert_eq!(resolve_log_directive(&settings), "debug");
 
         std::env::set_var("RUST_LOG", "trace");
@@ -327,7 +365,10 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         clear(&["RUST_LOG"]);
         std::env::set_var("RUST_LOG", "  ");
-        let settings = Settings { log_level: Some("warn".into()), ..Settings::default() };
+        let settings = Settings {
+            log_level: Some("warn".into()),
+            ..Settings::default()
+        };
         assert_eq!(resolve_log_directive(&settings), "warn");
         clear(&["RUST_LOG"]);
     }
