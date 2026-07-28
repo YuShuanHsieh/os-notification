@@ -25,6 +25,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   flows end to end.
 - A Docker-based, offline-capable Windows cross-build environment for the Rust
   Windows head.
+- Go notification-agent workspace with cross-platform core, console head,
+  Windows head, and test-publisher dev tool, wire-compatible with the C# and
+  Rust agents (same NATS subjects, JSON payload, and acknowledgement
+  contract).
 
 ### Changed
 
@@ -47,5 +51,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   troubleshooting documentation.
 - Added Windows tray verification guidance and Rust Windows cross-build
   instructions.
+- Added Go agent setup, configuration, build, test, and known-gaps
+  documentation (`golang/README.md`), and updated context docs, root
+  changelog to cover the Go implementation alongside C# and Rust.
 
 <!-- PR #14: feat(rust): NATS WebSocket + pluggable auth (merged 2026-07-23) -->

@@ -10,8 +10,15 @@
 - Rust unit tests live beside the implementation under `rust/notify-agent-core`
   and include a live-path NATS integration test in
   `rust/notify-agent-core/tests/nats_integration.rs`.
+- Go tests live beside the implementation as `golang/internal/*/*_test.go`
+  (table-driven, standard `testing` package) plus a few `golang/cmd/*/*_test.go`
+  files for CLI parsing/rendering helpers. `golang/internal/host/host_test.go`
+  includes a live-path NATS integration test that skips cleanly (no failure)
+  when no server is reachable at `127.0.0.1:4222`, mirroring the C#/Rust
+  integration-test pattern.
 
-Tests use xUnit. Time-dependent core tests use
+.NET tests use xUnit; Go tests use the standard library `testing` package (see
+above). Time-dependent .NET core tests use
 `Microsoft.Extensions.TimeProvider.Testing.FakeTimeProvider`; new deterministic
 timing behavior should follow that pattern.
 
@@ -60,6 +67,23 @@ cd rust
 ./scripts/build-windows-docker.sh
 ```
 
+```bash
+cd golang
+test -z "$(gofmt -l .)"
+go vet ./...
+go build ./...
+go test ./...
+go test -race ./...
+```
+
+For the Go Windows head, cross-compile with the standard Go toolchain (no
+mingw or other cross-toolchain needed):
+
+```bash
+cd golang
+GOOS=windows GOARCH=amd64 go build -o notify-agent-windows.exe ./cmd/notify-agent-windows
+```
+
 Run formatting verification after restore/build because `--no-restore` keeps the
 lint check deterministic. To fix supported formatting diagnostics locally, remove
 `--verify-no-changes`, inspect the resulting diff, and then rerun verification.
@@ -91,3 +115,11 @@ a subscription exists.
   automated tests; verify it manually on Windows by checking immediate icon
   appearance, version/Close menu behavior, clean exit, and the startup-failure
   tooltip path. Rust Windows compilation does not prove desktop behavior.
+- The Go Windows head's PowerShell-invoked toast submission
+  (`golang/cmd/notify-agent-windows/renderer.go`) and its
+  `github.com/getlantern/systray`-based tray icon (`tray.go`) both have no
+  automated coverage and require a real Windows desktop to verify manually
+  (icon appearance, version/Close menu, clean exit, startup-failure tooltip,
+  and an actual rendered toast including the avatar-image path). Successful
+  `GOOS=windows GOARCH=amd64 go build` cross-compilation proves the code
+  compiles, not that it behaves correctly at runtime.
