@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,32 +49,58 @@ func ParseSettings(data []byte) (Settings, error) {
 	return s, nil
 }
 
+// settingsLoadDiagnostic captures one log-worthy event from LoadSettingsFile
+// as data instead of logging it directly. LoadSettingsFile necessarily runs
+// before main.go can call slog.SetDefault (the log level to configure comes
+// from the settings it loads), so anything it logged directly would go
+// through slog's *default* logger -- wrong level threshold, wrong handler --
+// rather than the one main.go configures immediately afterward. The caller
+// replays these through Log once the real logger is in place.
+type settingsLoadDiagnostic struct {
+	level slog.Level
+	msg   string
+	args  []any
+}
+
+// Log emits the diagnostic through slog's current default logger. Callers
+// should only invoke this after slog.SetDefault has installed the properly
+// configured logger, so the message honors the resolved level/format.
+func (d settingsLoadDiagnostic) Log() {
+	slog.Default().Log(context.Background(), d.level, d.msg, d.args...)
+}
+
 // LoadSettingsFile reads and parses the settings file at path. It never
 // returns an error to the caller -- a missing file, an unreadable file, and
 // malformed JSON all fall back to a zero Settings{} (i.e. every field
 // "not configured", so ResolveHostOptions/ResolveCredsFile/ResolveDeviceID/
-// ResolveLogLevel fall through to their own defaults) plus a logged
-// message, never a startup failure. A missing file logs at Debug (the
-// common, expected case when no settings file has been deployed yet); an
-// existing-but-unreadable-or-malformed file logs at Warn, since that more
-// likely reflects an operator mistake worth noticing.
-func LoadSettingsFile(path string) (Settings, bool) {
+// ResolveLogLevel fall through to their own defaults) plus a returned
+// diagnostic describing what happened, never a startup failure. A missing
+// file is Debug-level (the common, expected case when no settings file has
+// been deployed yet); an existing-but-unreadable-or-malformed file is
+// Warn-level, since that more likely reflects an operator mistake worth
+// noticing. The diagnostic is returned rather than logged here -- see
+// settingsLoadDiagnostic -- so the caller can log it through the real,
+// settings-configured logger instead of slog's default one.
+func LoadSettingsFile(path string) (Settings, bool, []settingsLoadDiagnostic) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			slog.Debug("settings file not found, using defaults", "path", path)
-		} else {
-			slog.Warn("settings file could not be read, using defaults", "path", path, "error", err)
+			return Settings{}, false, []settingsLoadDiagnostic{
+				{level: slog.LevelDebug, msg: "settings file not found, using defaults", args: []any{"path", path}},
+			}
 		}
-		return Settings{}, false
+		return Settings{}, false, []settingsLoadDiagnostic{
+			{level: slog.LevelWarn, msg: "settings file could not be read, using defaults", args: []any{"path", path, "error", err}},
+		}
 	}
 
 	s, err := ParseSettings(data)
 	if err != nil {
-		slog.Warn("settings file could not be parsed, using defaults", "path", path, "error", err)
-		return Settings{}, false
+		return Settings{}, false, []settingsLoadDiagnostic{
+			{level: slog.LevelWarn, msg: "settings file could not be parsed, using defaults", args: []any{"path", path, "error", err}},
+		}
 	}
-	return s, true
+	return s, true, nil
 }
 
 // isBlank reports whether s is empty or contains only whitespace, matching

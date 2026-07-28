@@ -38,14 +38,21 @@ func main() {
 
 func run() int {
 	// Load the Feature-2 settings file (best-effort: a missing or malformed
-	// file falls back to defaults, logged, never a startup failure) before
-	// anything else, since its logLevel field feeds the logger set up right
-	// after -- everything logged from here on should honor it.
-	settings, _ := LoadSettingsFile(defaultSettingsFilePath())
+	// file falls back to defaults, never a startup failure) before anything
+	// else, since its logLevel field feeds the logger set up right after --
+	// everything logged from here on should honor it. LoadSettingsFile
+	// returns its own load diagnostics as data rather than logging them
+	// directly, since the properly-configured logger doesn't exist yet at
+	// this point -- replay them below, immediately after SetDefault, so they
+	// go through the real logger instead of slog's default one.
+	settings, _, settingsDiagnostics := LoadSettingsFile(defaultSettingsFilePath())
 
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(ResolveLogLevel(os.Getenv, settings))
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: levelVar})))
+	for _, d := range settingsDiagnostics {
+		d.Log()
+	}
 
 	alreadyRunning, err := acquireSingleInstance()
 	if err != nil {

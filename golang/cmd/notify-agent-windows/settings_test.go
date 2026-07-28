@@ -18,12 +18,15 @@ func envMap(m map[string]string) func(string) string {
 func TestLoadSettingsFile_MissingFileUsesDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
 
-	s, ok := LoadSettingsFile(path)
+	s, ok, diags := LoadSettingsFile(path)
 	if ok {
 		t.Fatalf("LoadSettingsFile(%q) ok = true, want false for a missing file", path)
 	}
 	if s != (Settings{}) {
 		t.Fatalf("LoadSettingsFile(%q) = %+v, want zero value", path, s)
+	}
+	if len(diags) != 1 || diags[0].level != slog.LevelDebug {
+		t.Fatalf("LoadSettingsFile(%q) diagnostics = %+v, want exactly one Debug-level diagnostic", path, diags)
 	}
 }
 
@@ -32,12 +35,15 @@ func TestLoadSettingsFile_MalformedJSONUsesDefaults(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 	writeFile(t, path, `{ this is not valid json `)
 
-	s, ok := LoadSettingsFile(path)
+	s, ok, diags := LoadSettingsFile(path)
 	if ok {
 		t.Fatalf("LoadSettingsFile ok = true, want false for malformed JSON")
 	}
 	if s != (Settings{}) {
 		t.Fatalf("LoadSettingsFile = %+v, want zero value on malformed JSON", s)
+	}
+	if len(diags) != 1 || diags[0].level != slog.LevelWarn {
+		t.Fatalf("LoadSettingsFile diagnostics = %+v, want exactly one Warn-level diagnostic", diags)
 	}
 }
 
@@ -46,9 +52,12 @@ func TestLoadSettingsFile_PartialFileLeavesRestDefault(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 	writeFile(t, path, `{"natsUrl": "nats://example:4222", "logLevel": "debug"}`)
 
-	s, ok := LoadSettingsFile(path)
+	s, ok, diags := LoadSettingsFile(path)
 	if !ok {
 		t.Fatalf("LoadSettingsFile ok = false, want true for a valid file")
+	}
+	if len(diags) != 0 {
+		t.Fatalf("LoadSettingsFile diagnostics = %+v, want none for a valid file", diags)
 	}
 	if s.NatsURL != "nats://example:4222" {
 		t.Errorf("NatsURL = %q, want %q", s.NatsURL, "nats://example:4222")
