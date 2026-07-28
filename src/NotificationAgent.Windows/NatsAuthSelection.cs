@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NotificationAgent.Core.Nats;
 
 namespace NotificationAgent.Windows;
@@ -11,7 +12,8 @@ internal static class NatsAuthSelection
         string? authServiceScope,
         string? credsFile,
         MsalIdentityProvider? msalIdentity,
-        HttpClient httpClient)
+        HttpClient httpClient,
+        ILogger? logger = null)
     {
         if (authServiceUrl is { Length: > 0 })
         {
@@ -36,12 +38,20 @@ internal static class NatsAuthSelection
                     "otherwise be sent in cleartext).");
             }
 
+            logger?.NatsAuthModeExternalService(authServiceUrl);
             return new ExternalAuthServiceNatsAuthProvider(
                 uri,
                 ct => msalIdentity.GetAccessTokenAsync(authServiceScope, ct),
                 httpClient);
         }
 
-        return credsFile is { Length: > 0 } ? new CredsFileNatsAuthProvider(credsFile) : null;
+        if (credsFile is { Length: > 0 })
+        {
+            logger?.NatsAuthModeCredsFile(credsFile);
+            return new CredsFileNatsAuthProvider(credsFile);
+        }
+
+        logger?.NatsAuthModeNone();
+        return null;
     }
 }
