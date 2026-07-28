@@ -40,6 +40,7 @@ impl DedupCache {
         }
 
         if g.expiry_by_key.get(key).is_some_and(|exp| *exp > now) {
+            tracing::debug!(dedup_key = key, "dropping duplicate event (dedup key already seen within TTL)");
             return false;
         }
 

@@ -185,7 +185,11 @@ impl RenderSink for AckingRenderSink {
         let submitted_at = match self.renderer.show(&toast).await {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!(error = %e, "toast render failed");
+                // Error, not warn: per the "single bad event can't crash the agent"
+                // contract this failure is swallowed (no ack, no retry, no panic), so
+                // this log line is the only production visibility into a dropped
+                // render — an operator/debugger needs to see it as a real failure.
+                tracing::error!(error = %e, event_count = toast.sources.len(), "toast render failed; no ack will be sent for this toast");
                 return;
             }
         };
