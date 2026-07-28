@@ -50,6 +50,9 @@ internal static partial class Log
     [LoggerMessage(EventId = 13, Level = LogLevel.Debug, Message = "Windows head starting: settings file = {SettingsPath} (exists={Exists}).")]
     public static partial void StartupSettingsFile(this ILogger logger, string settingsPath, bool exists);
 
+    /// <summary><paramref name="natsUrl"/> must already be redacted (see
+    /// <see cref="NatsUrlRedactor"/>) — a NATS URL can carry credentials as userinfo (e.g.
+    /// <c>nats://user:password@host:4222</c>) and must never reach this log verbatim.</summary>
     [LoggerMessage(EventId = 14, Level = LogLevel.Information, Message = "Startup configuration resolved: NATS = {NatsUrl}, subject template = {SubjectTemplate}.")]
     public static partial void StartupConfigurationResolved(this ILogger logger, string natsUrl, string subjectTemplate);
 }

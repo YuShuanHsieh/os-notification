@@ -58,7 +58,10 @@ var authProvider = NatsAuthSelection.Select(
     new HttpClient(),
     loggerFactory.CreateLogger("NatsAuthSelection"));
 
-startupLogger.StartupConfigurationResolved(options.NatsUrl, options.SubjectTemplate);
+if (startupLogger.IsEnabled(LogLevel.Information))
+{
+    startupLogger.StartupConfigurationResolved(NatsUrlRedactor.Redact(options.NatsUrl), options.SubjectTemplate);
+}
 
 Application.Run(new TrayApplicationContext(
     ct => AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider, ct),
