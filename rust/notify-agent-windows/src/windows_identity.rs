@@ -28,26 +28,48 @@
 ///   qualified name on domain-joined machines).
 /// - Lowercases, matching the `u_{oid}` shape the AAD/device-code path
 ///   already produces.
-/// - Rejects `.`, `*`, and `>`: this id is substituted directly into the
-///   `notify.user.{0}.desktop` subject template. NATS treats `.` as a
-///   subject-token separator and `*`/`>` as wildcard tokens, so an
-///   unvalidated username could otherwise turn a per-user subscription into
-///   one that accidentally (or maliciously) receives other users' events.
-///   A sibling Go implementation of this same product needed exactly this
-///   guard after a security-focused review — treat it as required
-///   hardening, not optional.
+/// - Sanitizes via an *allowlist* (`[a-z0-9_-]`, everything else mapped to
+///   `_`) rather than rejecting a denylist of characters: this id is
+///   substituted directly into the `notify.user.{0}.desktop` subject
+///   template, which flows straight into the NATS wire protocol's
+///   whitespace-tokenized `SUB <subject> [queue-group] <sid>` line. A
+///   denylist that only blocks `.`/`*`/`>` still lets an interior space
+///   through (Windows account names may legitimately contain spaces, e.g.
+///   "John Doe", and `trim()` only strips the ends) — the NATS server then
+///   parses everything after the space as a queue-group token, silently
+///   truncating the subject and misrouting the subscription with no error
+///   logged anywhere. An allowlist closes this class of bug entirely rather
+///   than chasing individual unsafe characters one at a time, and as a
+///   bonus stops rejecting extremely common `first.last`-style Windows/AD
+///   usernames outright (they're sanitized to `first_last` instead) — this
+///   identity path is now the *only* one available when no AAD client id is
+///   configured, so a hard rejection would leave those accounts with no way
+///   to run the agent at all.
 pub fn user_id_from_username(raw: &str) -> anyhow::Result<String> {
-    let unqualified = raw.rsplit('\\').next().unwrap_or(raw);
-    let lower = unqualified.trim().to_lowercase();
-    if lower.is_empty() {
-        anyhow::bail!("windows username resolved to an empty string");
-    }
-    if lower.contains(['.', '*', '>']) {
+    let stripped = strip_domain_prefix(raw.trim());
+    let lower = stripped.to_lowercase();
+    let sanitized: String = lower
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() || sanitized.chars().all(|c| c == '_') {
         anyhow::bail!(
-            "windows username {lower:?} contains '.', '*', or '>', which are unsafe to embed in a NATS subject"
+            "windows username {raw:?} has no usable characters for identity after sanitization"
         );
     }
-    Ok(format!("u_{lower}"))
+    Ok(format!("u_{sanitized}"))
+}
+
+/// Strips a `DOMAIN\` prefix if present (see `user_id_from_username`'s doc
+/// comment).
+fn strip_domain_prefix(raw: &str) -> &str {
+    raw.rsplit('\\').next().unwrap_or(raw)
 }
 
 #[cfg(windows)]
@@ -123,18 +145,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dot() {
-        assert!(user_id_from_username("bob.smith").is_err());
+    fn sanitizes_interior_space() {
+        // The confirmed-exploitable case: an unsanitized interior space would
+        // let the id split a NATS `SUB <subject> [queue-group] <sid>` line
+        // into subject + queue-group. Must come out as one safe token.
+        assert_eq!(user_id_from_username("John Doe").unwrap(), "u_john_doe");
     }
 
     #[test]
-    fn rejects_star() {
-        assert!(user_id_from_username("bob*").is_err());
+    fn sanitizes_dot() {
+        assert_eq!(user_id_from_username("john.doe").unwrap(), "u_john_doe");
     }
 
     #[test]
-    fn rejects_gt() {
-        assert!(user_id_from_username("bob>").is_err());
+    fn sanitizes_star() {
+        assert_eq!(user_id_from_username("user*name").unwrap(), "u_user_name");
+    }
+
+    #[test]
+    fn sanitizes_gt() {
+        assert_eq!(user_id_from_username("user>name").unwrap(), "u_user_name");
     }
 
     #[test]
@@ -149,14 +179,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_username_that_sanitizes_to_all_underscores() {
+        // Nothing but unsafe characters survives sanitization to a usable id.
+        assert!(user_id_from_username("***").is_err());
+        assert!(user_id_from_username("...").is_err());
+    }
+
+    #[test]
     fn accepts_common_username_shapes() {
-        for raw in ["jdoe", "j.doe-test_1", "MACHINE\\svc_account"] {
-            // `.` in "j.doe-test_1" is expected to be rejected: assert the two
-            // classes separately instead of asserting success for all.
-            let _ = user_id_from_username(raw); // must not panic on any shape
-        }
-        assert!(user_id_from_username("jdoe").is_ok());
-        assert!(user_id_from_username("MACHINE\\svc_account").is_ok());
-        assert!(user_id_from_username("j.doe-test_1").is_err());
+        assert_eq!(user_id_from_username("jdoe").unwrap(), "u_jdoe");
+        assert_eq!(
+            user_id_from_username("j.doe-test_1").unwrap(),
+            "u_j_doe-test_1"
+        );
+        assert_eq!(
+            user_id_from_username("MACHINE\\svc_account").unwrap(),
+            "u_svc_account"
+        );
     }
 }
