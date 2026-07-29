@@ -45,10 +45,25 @@
 ///   identity path is now the *only* one available when no AAD client id is
 ///   configured, so a hard rejection would leave those accounts with no way
 ///   to run the agent at all.
+/// - The allowlist sanitization above is inherently lossy: distinct
+///   usernames can sanitize to the identical string (`"user.name"` and
+///   `"user_name"` both become `user_name`), which would collide two
+///   different users onto one identity/NATS subject. To stay injective, an
+///   8-hex-char suffix of `SHA-256(normalized username)` — hashed *before*
+///   sanitization, so inputs that sanitize identically still diverge — is
+///   appended to the sanitized prefix. The hash suffix also means the final
+///   id is always non-empty/usable regardless of how degenerate the
+///   sanitized prefix is (e.g. an all-punctuation username sanitizes to all
+///   underscores), so the only remaining error case is an empty username
+///   after trimming/domain-stripping. Same fix applied identically in the
+///   sibling C#/Go Windows-head implementations.
 pub fn user_id_from_username(raw: &str) -> anyhow::Result<String> {
     let stripped = strip_domain_prefix(raw.trim());
-    let lower = stripped.to_lowercase();
-    let sanitized: String = lower
+    let normalized = stripped.trim().to_lowercase();
+    if normalized.is_empty() {
+        anyhow::bail!("windows username {raw:?} is empty after trimming/stripping domain prefix");
+    }
+    let sanitized: String = normalized
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
@@ -58,12 +73,19 @@ pub fn user_id_from_username(raw: &str) -> anyhow::Result<String> {
             }
         })
         .collect();
-    if sanitized.is_empty() || sanitized.chars().all(|c| c == '_') {
-        anyhow::bail!(
-            "windows username {raw:?} has no usable characters for identity after sanitization"
-        );
-    }
-    Ok(format!("u_{sanitized}"))
+    let hash8 = hash_prefix8(&normalized);
+    Ok(format!("u_{sanitized}_{hash8}"))
+}
+
+/// First 8 lowercase hex characters (4 bytes) of `SHA-256(input)`, used as a
+/// collision-resistant suffix so two usernames that sanitize identically
+/// still produce different ids (see `user_id_from_username`'s doc comment).
+/// Hand-rolled hex formatting rather than pulling in a `hex` crate for 4
+/// bytes.
+fn hash_prefix8(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(input.as_bytes());
+    digest[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Strips a `DOMAIN\` prefix if present (see `user_id_from_username`'s doc
@@ -130,19 +152,55 @@ pub use win::WindowsUsernameIdentity;
 mod tests {
     use super::*;
 
+    /// Checks the shape `u_<sanitized>_<8 lowercase hex chars>` without
+    /// hardcoding the hash (which depends on the actual SHA-256 output and
+    /// can't be hand-computed in a test). Also asserts the sanitized middle
+    /// section only contains allowlisted characters.
+    fn assert_matches_id_shape(id: &str) {
+        let rest = id
+            .strip_prefix("u_")
+            .unwrap_or_else(|| panic!("{id:?} does not start with \"u_\""));
+        let (sanitized, hash8) = rest
+            .rsplit_once('_')
+            .unwrap_or_else(|| panic!("{id:?} has no '_' separating sanitized prefix from hash"));
+        assert_eq!(
+            hash8.len(),
+            8,
+            "hash suffix of {id:?} should be exactly 8 hex chars, got {hash8:?}"
+        );
+        assert!(
+            hash8
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "hash suffix of {id:?} should be lowercase hex, got {hash8:?}"
+        );
+        assert!(
+            sanitized
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "sanitized portion of {id:?} contains a character outside [a-z0-9_-]: {sanitized:?}"
+        );
+    }
+
     #[test]
     fn lowercases_and_prefixes() {
-        assert_eq!(user_id_from_username("Alice").unwrap(), "u_alice");
+        let id = user_id_from_username("Alice").unwrap();
+        assert_matches_id_shape(&id);
+        assert!(id.starts_with("u_alice_"), "got {id:?}");
     }
 
     #[test]
     fn strips_domain_prefix() {
-        assert_eq!(user_id_from_username(r"CONTOSO\Bob").unwrap(), "u_bob");
+        let id = user_id_from_username(r"CONTOSO\Bob").unwrap();
+        assert_matches_id_shape(&id);
+        assert!(id.starts_with("u_bob_"), "got {id:?}");
     }
 
     #[test]
     fn trims_whitespace() {
-        assert_eq!(user_id_from_username("  alice  ").unwrap(), "u_alice");
+        let id = user_id_from_username("  alice  ").unwrap();
+        assert_matches_id_shape(&id);
+        assert!(id.starts_with("u_alice_"), "got {id:?}");
     }
 
     #[test]
@@ -150,22 +208,30 @@ mod tests {
         // The confirmed-exploitable case: an unsanitized interior space would
         // let the id split a NATS `SUB <subject> [queue-group] <sid>` line
         // into subject + queue-group. Must come out as one safe token.
-        assert_eq!(user_id_from_username("John Doe").unwrap(), "u_john_doe");
+        let id = user_id_from_username("John Doe").unwrap();
+        assert_matches_id_shape(&id);
+        assert!(id.starts_with("u_john_doe_"), "got {id:?}");
     }
 
     #[test]
     fn sanitizes_dot() {
-        assert_eq!(user_id_from_username("john.doe").unwrap(), "u_john_doe");
+        let id = user_id_from_username("john.doe").unwrap();
+        assert_matches_id_shape(&id);
+        assert!(id.starts_with("u_john_doe_"), "got {id:?}");
     }
 
     #[test]
     fn sanitizes_star() {
-        assert_eq!(user_id_from_username("user*name").unwrap(), "u_user_name");
+        let id = user_id_from_username("user*name").unwrap();
+        assert_matches_id_shape(&id);
+        assert!(id.starts_with("u_user_name_"), "got {id:?}");
     }
 
     #[test]
     fn sanitizes_gt() {
-        assert_eq!(user_id_from_username("user>name").unwrap(), "u_user_name");
+        let id = user_id_from_username("user>name").unwrap();
+        assert_matches_id_shape(&id);
+        assert!(id.starts_with("u_user_name_"), "got {id:?}");
     }
 
     #[test]
@@ -180,22 +246,59 @@ mod tests {
     }
 
     #[test]
-    fn rejects_username_that_sanitizes_to_all_underscores() {
-        // Nothing but unsafe characters survives sanitization to a usable id.
-        assert!(user_id_from_username("***").is_err());
-        assert!(user_id_from_username("...").is_err());
+    fn accepts_common_username_shapes() {
+        for raw in ["jdoe", "j.doe-test_1", "MACHINE\\svc_account"] {
+            let id = user_id_from_username(raw).unwrap();
+            assert_matches_id_shape(&id);
+        }
     }
 
     #[test]
-    fn accepts_common_username_shapes() {
-        assert_eq!(user_id_from_username("jdoe").unwrap(), "u_jdoe");
+    fn is_deterministic() {
+        // Same input, same output every time (no randomness/timestamps in the
+        // derivation) — required for a stable per-user identity.
         assert_eq!(
-            user_id_from_username("j.doe-test_1").unwrap(),
-            "u_j_doe-test_1"
+            user_id_from_username("Alice").unwrap(),
+            user_id_from_username("Alice").unwrap()
         );
         assert_eq!(
-            user_id_from_username("MACHINE\\svc_account").unwrap(),
-            "u_svc_account"
+            user_id_from_username(r"CONTOSO\svc.deploy").unwrap(),
+            user_id_from_username(r"CONTOSO\svc.deploy").unwrap()
         );
+    }
+
+    #[test]
+    fn distinguishes_usernames_that_sanitize_identically() {
+        // The actual bug being fixed: "user.name" and "user_name" both
+        // sanitize (allowlist-mapped) to the same "user_name" prefix, so
+        // without a hash suffix derived from the *pre-sanitization* string
+        // they'd collide onto the identical final user id.
+        let a = user_id_from_username("user.name").unwrap();
+        let b = user_id_from_username("user_name").unwrap();
+        assert_matches_id_shape(&a);
+        assert_matches_id_shape(&b);
+        assert_ne!(
+            a, b,
+            "\"user.name\" and \"user_name\" must not collide onto the same id, got {a:?} == {b:?}"
+        );
+
+        // Same class of collision via a different sanitized character (*).
+        let c = user_id_from_username("user*name").unwrap();
+        let d = user_id_from_username("user_name").unwrap();
+        assert_ne!(c, d, "\"user*name\" and \"user_name\" must not collide");
+    }
+
+    #[test]
+    fn degenerate_all_punctuation_username_still_succeeds() {
+        // No longer an error case: the hash suffix guarantees a non-empty,
+        // usable id no matter how degenerate the sanitized prefix is. Two
+        // different all-punctuation usernames must still land on different
+        // ids (they normalize/hash differently even though both sanitize to
+        // all underscores).
+        let a = user_id_from_username("***").unwrap();
+        let b = user_id_from_username("...").unwrap();
+        assert_matches_id_shape(&a);
+        assert_matches_id_shape(&b);
+        assert_ne!(a, b);
     }
 }
