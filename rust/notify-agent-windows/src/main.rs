@@ -182,14 +182,18 @@ mod win {
         // `%LOCALAPPDATA%\DesktopNotificationAgent\logs\` (the only sink
         // that actually exists in this app's real deployed configuration —
         // see `file_log_writer`'s doc comment), both under one shared
-        // `EnvFilter`. `_file_guard` must stay alive for the rest of this
-        // function's scope (see `file_log_writer`); `file_log_error` is
-        // captured before the result is consumed so it can still be logged
-        // below, once a subscriber exists either way.
+        // `EnvFilter`. `file_guard` is handed off to `tray::create` below
+        // rather than just bound to a local here: this fn's only real exit
+        // path is `tray.rs`'s Close handler calling `std::process::exit`,
+        // which runs no destructors, so a guard that only lived in a local
+        // that never goes out of scope would never flush the file sink's
+        // final lines. `file_log_error` is captured before the result is
+        // consumed so it can still be logged below, once a subscriber
+        // exists either way.
         let filter = settings::resolve_log_filter(&settings);
         let file_log_result = file_log_writer();
         let file_log_error = file_log_result.as_ref().err().map(|e| e.to_string());
-        let (_file_guard, log_dir) = match file_log_result {
+        let (file_guard, log_dir) = match file_log_result {
             Ok((writer, guard, dir)) => {
                 tracing_subscriber::registry()
                     .with(filter)
@@ -226,7 +230,7 @@ mod win {
 
         let (close_tx, close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let tray = super::tray::create(close_tx, done_rx)?;
+        let tray = super::tray::create(close_tx, done_rx, file_guard)?;
 
         std::thread::spawn(move || {
             let result = tokio::runtime::Runtime::new()

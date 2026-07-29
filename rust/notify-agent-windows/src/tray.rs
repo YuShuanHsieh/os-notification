@@ -70,6 +70,13 @@ struct TrayState {
     icon: HICON,
     close_tx: tokio::sync::mpsc::UnboundedSender<()>,
     done_rx: std::cell::RefCell<Option<mpsc::Receiver<()>>>,
+    /// The file-log sink's `WorkerGuard` (see `main.rs`'s `file_log_writer`), handed off here
+    /// so the Close-menu handler -- the sole path through which this process calls
+    /// `std::process::exit` -- can explicitly drop it (flushing the buffered writer) right
+    /// before the hard exit. `process::exit` does not run destructors, so if this guard were
+    /// only held by a local in `run()` that never returns, it would never be dropped and the
+    /// last buffered lines (including the shutdown log line itself) would be silently lost.
+    file_guard: std::cell::RefCell<Option<tracing_appender::non_blocking::WorkerGuard>>,
 }
 
 fn set_tip(data: &mut NOTIFYICONDATAW, text: &str) {
@@ -102,10 +109,13 @@ fn load_tray_icon(hinstance: HINSTANCE) -> anyhow::Result<HICON> {
 /// finished starting, matching the C# design's "icon appears without waiting on NATS connect").
 /// `close_tx` is signaled (from the window thread) when the user clicks Close; `done_rx` is
 /// consumed by the Close handler's watcher thread, which waits up to `CLOSE_TIMEOUT` for the
-/// agent thread to report shutdown finished, then hard-exits the process regardless.
+/// agent thread to report shutdown finished, then hard-exits the process regardless. `file_guard`
+/// (if the file-log sink was set up successfully) is dropped -- flushing it -- by that same
+/// watcher thread immediately before the hard exit; see `TrayState::file_guard`'s doc comment.
 pub fn create(
     close_tx: tokio::sync::mpsc::UnboundedSender<()>,
     done_rx: mpsc::Receiver<()>,
+    file_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 ) -> anyhow::Result<TrayHandle> {
     unsafe {
         let hinstance: HINSTANCE = GetModuleHandleW(PCWSTR::null())?.into();
@@ -143,6 +153,7 @@ pub fn create(
             icon,
             close_tx,
             done_rx: std::cell::RefCell::new(Some(done_rx)),
+            file_guard: std::cell::RefCell::new(file_guard),
         }));
 
         let hwnd = CreateWindowExW(
@@ -248,8 +259,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let _ = DestroyIcon(state.icon);
             let _ = state.close_tx.send(());
             if let Some(done_rx) = state.done_rx.borrow_mut().take() {
+                // Taken out here (not inside the spawned thread) so it's moved into the
+                // closure below regardless of which branch runs first.
+                let file_guard = state.file_guard.borrow_mut().take();
                 std::thread::spawn(move || {
                     let _ = done_rx.recv_timeout(CLOSE_TIMEOUT);
+                    // Explicitly flush the file-log sink before the hard exit below:
+                    // `process::exit` runs no destructors, so without this explicit drop
+                    // the guard (and the final buffered log lines, including this exact
+                    // shutdown sequence) would be silently discarded.
+                    drop(file_guard);
                     std::process::exit(0);
                 });
             }
