@@ -53,7 +53,7 @@ IToastRenderer ──► ack: submitted_to_windows ──► NATS notify.ack.des
 `IIdentityProvider` resolves the application user ID and device ID. The Windows account name itself is not used as identity for the primary paths (AAD/MSAL sign-in, or the console host's environment-variable identity):
 
 - **Windows (AAD, when `NOTIFY_AAD_CLIENT_ID` is set):** `MsalIdentityProvider` — WAM-brokered silent MSAL sign-in; user ID is the Entra object ID (`u_{oid}`), device ID is a stable per-install GUID under `%LOCALAPPDATA%\DesktopNotificationAgent`.
-- **Windows (default, no AAD configured):** `WindowsUsernameIdentityProvider` — a deliberate, narrow exception derives the user ID from the signed-in Windows username instead (`u_{lowercased username}`), so `NOTIFY_USER_ID` is no longer required (or read) by the Windows head. The username is rejected if it contains `.`, `*`, or `>` (NATS subject wildcard/delimiter characters), since an unvalidated value could otherwise turn a per-user subscription into an accidental wildcard subscription.
+- **Windows (default, no AAD configured):** `WindowsUsernameIdentityProvider` — a deliberate, narrow exception derives the user ID from the signed-in Windows username instead, so `NOTIFY_USER_ID` is no longer required (or read) by the Windows head. The username is normalized (domain prefix stripped, lowercased, trimmed) then sanitized — every character outside `[a-z0-9_-]` (including NATS subject wildcard/delimiter characters like `.`/`*`/`>`, and whitespace) is replaced with `_`, rather than rejected — and suffixed with an 8-hex-character `SHA-256` digest of the pre-sanitization username so two usernames that sanitize to the same string still resolve to different identities: `u_{sanitized}_{hash8}`.
 - **Console/dev (Linux):** `EnvironmentIdentityProvider` — reads `NOTIFY_USER_ID` (required) and `NOTIFY_DEVICE_ID` (defaults to `d-{machinename}`). Unchanged; still the only identity source for `NotificationAgent.ConsoleHost`.
 
 ### Wire contracts
@@ -124,9 +124,13 @@ which both hosts support; if neither is set, the connection is unauthenticated
 
 ### App settings file (Windows only)
 
-The Windows head also reads an optional JSON settings file at
+**All three** Windows heads (C#, Rust, Go) read an optional JSON settings file at
 `%LOCALAPPDATA%\DesktopNotificationAgent\settings.json`, so a deployed agent can be
-configured without setting environment variables. Every field is optional:
+configured without setting environment variables. Every field is optional. The C#
+and Rust schemas are shown below (they support AAD and the external NATS auth
+service); the Go schema is intentionally narrower — `natsUrl`, `subjectTemplate`,
+`ackSubject`, `natsCredsFile`, `deviceId`, `logLevel` only — since the Go head has
+no AAD/external-auth-service support (see `golang/README.md`).
 
 ```json
 {
@@ -146,8 +150,10 @@ configured without setting environment variables. Every field is optional:
 Precedence per field is **environment variable (if set and non-blank) > settings
 file value (if present and non-blank) > built-in default**. A missing file is
 normal — it is never created or required — and a malformed file logs a warning and
-falls back to defaults rather than crashing startup. This file is specific to the
-C# Windows head; the console host and the Rust/Go Windows heads are unaffected.
+falls back to defaults rather than crashing startup. The console host (any
+language) does not read this file at all; it's Windows-heads-only. See
+`rust/README.md` and `golang/README.md` for each language's exact schema and
+precedence notes.
 
 ## How to use
 

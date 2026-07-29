@@ -146,8 +146,12 @@ selection between them at startup.
 - With an AAD client ID, `MsalIdentityProvider` tries silent WAM acquisition and
   falls back to interactive acquisition when UI is required. Without one,
   `WindowsUsernameIdentityProvider` derives a default identity from the Windows
-  username (`u_{lowercased username}`), rejecting usernames that contain `.`, `*`,
-  or `>` before they can reach subject construction.
+  username: normalized (domain-stripped, lowercased, trimmed), sanitized to
+  `[a-z0-9_-]` (every other character, including `.`/`*`/`>`/whitespace, becomes
+  `_`), then suffixed with an 8-hex-character `SHA-256` digest of the
+  pre-sanitization normalized username so that two usernames sanitizing to the
+  same string (e.g. `"user.name"` and `"user_name"`) still resolve to different
+  identities — `u_{sanitized}_{hash8}`.
 - The device ID file is created beneath
   `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`, unless overridden by
   `NOTIFY_DEVICE_ID`/the settings file's `deviceId`.
@@ -158,7 +162,10 @@ selection between them at startup.
 - The Windows head logs via `Microsoft.Extensions.Logging` (console, single-line),
   covering identity mode selection, NATS auth mode selection, resolved
   configuration, and startup success/failure. It does not thread logging through
-  `NotificationAgent.Core`.
+  `NotificationAgent.Core`. Any NATS URL logged (the connection URL or the
+  external-auth-service URL) is credential-redacted first (`NatsUrlRedactor`) —
+  userinfo embedded in the URL is never written to the log, and an unparseable
+  URL is logged as a fixed `<invalid URL>` marker rather than passed through.
 - The Rust Windows head is a tray application rather than a headless process. It
   shows a placeholder icon immediately, displays the running version and Close
   in its context menu, and marks the tooltip when agent startup fails. Close has
