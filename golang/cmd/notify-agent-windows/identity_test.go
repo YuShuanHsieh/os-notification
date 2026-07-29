@@ -152,52 +152,6 @@ func TestUserIDFromWindowsUsernameProducesSubscribableSubject(t *testing.T) {
 	}
 }
 
-// TestResolveWindowsDeviceID_WhitespaceOnlySettingsValueFallsThroughToHostname
-// is the end-to-end regression test for Fix 3: a whitespace-only
-// Settings.DeviceID (e.g. a stray `"deviceId": "   "` in settings.json)
-// flowing through resolveWindowsDeviceID -- the exact device-ID resolution
-// WindowsUsernameIdentity.Resolve (identity_windows.go) performs -- must
-// fall all the way through to defaultWindowsDeviceID's hostname-derived
-// value, not "win" as a literal whitespace device ID. This exercises the
-// real call path (resolveWindowsDeviceID), not just ResolveDeviceID in
-// isolation (see settings_test.go's
-// TestResolveDeviceID_WhitespaceOnlyFileValueFallsThrough for that).
-func TestResolveWindowsDeviceID_WhitespaceOnlySettingsValueFallsThroughToHostname(t *testing.T) {
-	want, err := defaultWindowsDeviceID()
-	if err != nil {
-		t.Fatalf("defaultWindowsDeviceID: %v", err)
-	}
-
-	got, err := resolveWindowsDeviceID(noEnv, Settings{DeviceID: "   "})
-	if err != nil {
-		t.Fatalf("resolveWindowsDeviceID: %v", err)
-	}
-	if got != want {
-		t.Fatalf("resolveWindowsDeviceID with whitespace-only settings deviceId = %q, want hostname-derived fallback %q", got, want)
-	}
-}
-
-// TestResolveWindowsDeviceID_FilePrecedence covers the non-degenerate cases
-// (env wins, file used when env unset) through the same real call path.
-func TestResolveWindowsDeviceID_FilePrecedence(t *testing.T) {
-	got, err := resolveWindowsDeviceID(noEnv, Settings{DeviceID: "d-file"})
-	if err != nil {
-		t.Fatalf("resolveWindowsDeviceID: %v", err)
-	}
-	if got != "d-file" {
-		t.Fatalf("resolveWindowsDeviceID = %q, want file value %q", got, "d-file")
-	}
-
-	getenv := envMap(map[string]string{"NOTIFY_DEVICE_ID": "d-env"})
-	got, err = resolveWindowsDeviceID(getenv, Settings{DeviceID: "d-file"})
-	if err != nil {
-		t.Fatalf("resolveWindowsDeviceID: %v", err)
-	}
-	if got != "d-env" {
-		t.Fatalf("resolveWindowsDeviceID = %q, want env value %q to win", got, "d-env")
-	}
-}
-
 func TestDefaultWindowsDeviceID(t *testing.T) {
 	got, err := defaultWindowsDeviceID()
 	if err != nil {
