@@ -23,8 +23,13 @@ public class AgentHostSubjectTemplateTests
     [InlineData("notify.>")]
     [InlineData("notify.user.desktop")]
     [InlineData("")]
+    [InlineData("notify.{{0}}.desktop")]
     public void ValidateSubjectTemplate_throws_when_template_has_no_placeholder(string subjectTemplate)
     {
+        // "notify.{{0}}.desktop" in particular: its raw text contains the substring "{0}", so
+        // a naive substring check would wrongly accept it, but {{/}} are literal-brace escapes
+        // in a composite format string, so string.Format would actually emit the literal text
+        // "notify.{0}.desktop" verbatim with no real user-id substitution.
         Assert.Throws<InvalidOperationException>(() => AgentHost.ValidateSubjectTemplate(subjectTemplate));
     }
 

@@ -80,10 +80,29 @@ public sealed class AgentHost : IAsyncDisposable
     /// unformatted (e.g. a settings-file/env value of <c>"notify.&gt;"</c> would succeed as-is)
     /// instead of failing startup clearly — potentially creating an accidental wildcard-style
     /// subscription. Mirrors an equivalent guard in the Go implementation of this same product
-    /// (golang/internal/host/host.go's validateSubjectTemplate), added after a security review.</summary>
+    /// (golang/internal/host/host.go's validateSubjectTemplate), added after a security review.
+    ///
+    /// This formats a sentinel value through the template rather than doing a naive substring
+    /// search for <c>"{0}"</c>: a template like <c>"notify.{{0}}.desktop"</c> contains that
+    /// substring in its raw text but, per composite format string escaping rules, <c>{{</c>/
+    /// <c>}}</c> mean a literal brace, so <c>string.Format</c> would actually emit the literal
+    /// text <c>notify.{0}.desktop</c> verbatim with no real substitution — a subtly broken
+    /// subject the substring check couldn't catch.</summary>
     internal static void ValidateSubjectTemplate(string subjectTemplate)
     {
-        if (!subjectTemplate.Contains("{0}", StringComparison.Ordinal))
+        const string sentinel = "__SUBJECT_TEMPLATE_PLACEHOLDER_SENTINEL__";
+        string formatted;
+        try
+        {
+            formatted = string.Format(CultureInfo.InvariantCulture, subjectTemplate, sentinel);
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidOperationException(
+                $"Subject template '{subjectTemplate}' is not a valid format string.", ex);
+        }
+
+        if (!formatted.Contains(sentinel, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 $"Subject template '{subjectTemplate}' must contain a {{0}} placeholder for " +
