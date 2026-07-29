@@ -45,6 +45,14 @@ type bucket struct {
 	timer  clock.Timer
 }
 
+// bucketOverflowWarnInterval bounds how often Add logs its bucket-overflow
+// warning under sustained overload -- see pipeline.queueFullWarnInterval's
+// doc comment for the identical rationale (sustained overload is exactly the
+// scenario that would otherwise flood the log). The cumulative
+// droppedBucketOverflow counter still reflects every drop regardless of
+// whether a given drop's warning gets logged.
+const bucketOverflowWarnInterval = 10 * time.Second
+
 // Aggregator owns priority handling, batching, and latest-state replacement.
 // Best-effort in steady state: bucket overflow silently drops the incoming
 // event (see context/contracts-and-invariants.md: "bounded resources, drop
@@ -60,6 +68,12 @@ type Aggregator struct {
 	// have required creating a bucket beyond MaxBuckets. Exposed via
 	// DroppedBucketOverflow below so a caller/telemetry hook can observe it.
 	droppedBucketOverflow uint64
+
+	// bucketOverflowLastWarnAt records when the bucket-overflow warning was
+	// last logged, guarded by mu (already held at the one call site that
+	// reads/writes it), so at most one warning is logged per
+	// bucketOverflowWarnInterval regardless of drop volume.
+	bucketOverflowLastWarnAt time.Time
 }
 
 // DroppedBucketOverflow returns the running count of events dropped because
@@ -123,9 +137,19 @@ func (a *Aggregator) Add(event *model.InboundNotification) {
 	if !ok {
 		if len(a.buckets) >= a.opts.MaxBuckets {
 			a.droppedBucketOverflow++
+			total := a.droppedBucketOverflow
 			maxBuckets := a.opts.MaxBuckets
+
+			now := a.clk.Now()
+			shouldLog := now.Sub(a.bucketOverflowLastWarnAt) >= bucketOverflowWarnInterval
+			if shouldLog {
+				a.bucketOverflowLastWarnAt = now
+			}
 			a.mu.Unlock()
-			slog.Warn("aggregator: dropped event, bucket overflow", "aggregationKey", key.aggregationKey, "priority", key.priority, "maxBuckets", maxBuckets)
+
+			if shouldLog {
+				slog.Warn("aggregator: dropped event, bucket overflow", "aggregationKey", key.aggregationKey, "priority", key.priority, "maxBuckets", maxBuckets, "totalDropped", total)
+			}
 			return
 		}
 		window := a.opts.NormalWindow

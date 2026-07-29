@@ -1,7 +1,11 @@
 package aggregator_test
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +13,36 @@ import (
 	"github.com/YuShuanHsieh/os-notification/golang/internal/clock"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
 )
+
+// logCapture replaces slog's package-level default logger (restored via
+// t.Cleanup) with one that writes into an in-memory buffer, so a test can
+// count how many times a particular message was logged without real I/O or
+// depending on test output ordering.
+type logCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *logCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *logCapture) count(substr string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Count(c.buf.String(), substr)
+}
+
+func captureLogs(t *testing.T) *logCapture {
+	t.Helper()
+	prev := slog.Default()
+	lc := &logCapture{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(lc, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return lc
+}
 
 var epoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -230,6 +264,61 @@ func TestExceedingMaxBucketsDropsTheOverflowEventInsteadOfPanickingOrGrowing(t *
 				t.Fatalf("overflow event c1 must be dropped, not rendered")
 			}
 		}
+	}
+}
+
+// TestBucketOverflowWarningIsRateLimited proves the fix for the log-flood
+// concern: sustained bucket overflow is exactly the scenario the warning
+// exists to surface, but logging it on every single drop would flood the
+// log with an identical line under that same sustained overflow. Many rapid
+// overflow drops (no time elapsed on the aggregator's own clock -- each Add
+// call uses a distinct EventID but the same over-cap aggregation key, so
+// every one hits the overflow-drop path since a dropped event never creates
+// a bucket) must produce only one warning line, while DroppedBucketOverflow
+// still counts every drop; advancing the clock past the rate-limit window
+// allows exactly one more.
+func TestBucketOverflowWarningIsRateLimited(t *testing.T) {
+	clk := clock.NewFakeClock(epoch)
+	rec := &recorder{}
+	opts := defaultOpts()
+	opts.MaxBuckets = 1
+	// Deliberately longer than the 11s clock advance below, so advancing
+	// past the rate-limit window doesn't also fire bucket "a"'s window timer
+	// and free up the single bucket slot -- this test wants "overflow"
+	// still over cap after the advance, not the bucket count changing out
+	// from under it.
+	opts.NormalWindow = time.Hour
+	agg := aggregator.New(opts, clk, rec.render)
+
+	logs := captureLogs(t)
+
+	// Fills the single available bucket.
+	agg.Add(event("a1", model.PriorityNormal, "a", false, "m"))
+
+	const dropAttempts = 50
+	for i := 0; i < dropAttempts; i++ {
+		// Aggregation key "overflow" never gets a bucket (always over cap),
+		// so every call here hits the overflow-drop path.
+		agg.Add(event(fmt.Sprintf("drop-%d", i), model.PriorityNormal, "overflow", false, "m"))
+	}
+
+	if got := agg.DroppedBucketOverflow(); got != dropAttempts {
+		t.Fatalf("DroppedBucketOverflow() = %d, want %d (every drop must still be counted)", got, dropAttempts)
+	}
+	if n := logs.count("bucket overflow"); n != 1 {
+		t.Fatalf("bucket-overflow warning logged %d times for %d rapid drops, want exactly 1", n, dropAttempts)
+	}
+
+	// Advancing the clock past the rate-limit window allows exactly one
+	// more logged occurrence for a subsequent drop.
+	clk.Advance(11 * time.Second)
+	agg.Add(event("drop-after-advance", model.PriorityNormal, "overflow", false, "m"))
+
+	if got := agg.DroppedBucketOverflow(); got != dropAttempts+1 {
+		t.Fatalf("DroppedBucketOverflow() = %d, want %d", got, dropAttempts+1)
+	}
+	if n := logs.count("bucket overflow"); n != 2 {
+		t.Fatalf("bucket-overflow warning logged %d times after advancing past the rate-limit window, want exactly 2", n)
 	}
 }
 
