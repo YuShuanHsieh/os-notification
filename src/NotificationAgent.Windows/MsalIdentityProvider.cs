@@ -77,10 +77,13 @@ internal static class DeviceIdStore
 {
     /// <param name="overrideValue">A non-blank value (from <c>NOTIFY_DEVICE_ID</c> or the
     /// settings file's <c>deviceId</c>, feature: app settings file) wins outright and skips
-    /// the file entirely, so operators can pin a reproducible device id.</param>
+    /// the file entirely, so operators can pin a reproducible device id. A whitespace-only
+    /// value (e.g. a settings file's <c>"deviceId": "   "</c>) is treated the same as absent,
+    /// so it falls through to the persisted/generated device id instead of "winning" with
+    /// garbage.</param>
     public static string GetOrCreate(string? overrideValue = null)
     {
-        if (overrideValue is { Length: > 0 })
+        if (!string.IsNullOrWhiteSpace(overrideValue))
         {
             return overrideValue;
         }
