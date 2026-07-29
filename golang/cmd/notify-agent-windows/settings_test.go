@@ -168,6 +168,18 @@ func TestResolveCredsFile_Precedence(t *testing.T) {
 	}
 }
 
+// TestResolveCredsFile_WhitespaceOnlyFileValueFallsThrough is a regression
+// test: a whitespace-only settings-file natsCredsFile value (e.g. an
+// operator's stray `"natsCredsFile": "   "`) must be treated as unset,
+// falling through to blank (no auth) instead of "winning" as a literal
+// whitespace path -- the same "blank means unset" rule env values already
+// get via isBlank in ResolveCredsFile's env check.
+func TestResolveCredsFile_WhitespaceOnlyFileValueFallsThrough(t *testing.T) {
+	if got := ResolveCredsFile(noEnv, Settings{NatsCredsFile: "   "}); got != "" {
+		t.Errorf("ResolveCredsFile with whitespace-only file value = %q, want blank (falls through to no-auth)", got)
+	}
+}
+
 func TestResolveDeviceID_Precedence(t *testing.T) {
 	if got := ResolveDeviceID(noEnv, Settings{DeviceID: "d-file"}); got != "d-file" {
 		t.Errorf("ResolveDeviceID = %q, want file value when env unset", got)
@@ -178,6 +190,19 @@ func TestResolveDeviceID_Precedence(t *testing.T) {
 	}
 	if got := ResolveDeviceID(noEnv, Settings{}); got != "" {
 		t.Errorf("ResolveDeviceID = %q, want blank (caller default applies) when nothing configured", got)
+	}
+}
+
+// TestResolveDeviceID_WhitespaceOnlyFileValueFallsThrough is a regression
+// test: a whitespace-only settings-file deviceId value must be treated as
+// unset (falling through to blank, which the caller then resolves to its
+// own hostname-derived fallback -- see
+// TestResolveWindowsDeviceID_WhitespaceOnlySettingsValueFallsThroughToHostname
+// in identity_test.go for the end-to-end path) instead of "winning" as a
+// literal whitespace device ID.
+func TestResolveDeviceID_WhitespaceOnlyFileValueFallsThrough(t *testing.T) {
+	if got := ResolveDeviceID(noEnv, Settings{DeviceID: "   "}); got != "" {
+		t.Errorf("ResolveDeviceID with whitespace-only file value = %q, want blank (falls through to caller default)", got)
 	}
 }
 

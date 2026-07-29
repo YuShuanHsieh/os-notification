@@ -135,10 +135,18 @@ func ResolveHostOptions(getenv func(string) string, envOpts host.Options, s Sett
 }
 
 // ResolveCredsFile applies the same env-then-file precedence to the NATS
-// creds file path. A blank result means "no auth", same as today.
+// creds file path. A blank result means "no auth", same as today. A
+// whitespace-only settings-file value is treated the same as an absent one
+// (matching isBlank's "blank means unset" rule, which env values already get
+// via getenv's !isBlank(v) check above) -- otherwise a stray
+// `"natsCredsFile": "   "` in settings.json would "win" over falling through
+// to no-auth instead of being ignored like it should be.
 func ResolveCredsFile(getenv func(string) string, s Settings) string {
 	if v := getenv("NOTIFY_NATS_CREDS_FILE"); !isBlank(v) {
 		return v
+	}
+	if isBlank(s.NatsCredsFile) {
+		return ""
 	}
 	return s.NatsCredsFile
 }
@@ -146,10 +154,16 @@ func ResolveCredsFile(getenv func(string) string, s Settings) string {
 // ResolveDeviceID applies the same env-then-file precedence to the device
 // ID override. A blank result means "no override" -- the caller (the
 // Windows identity provider) falls back to its own hostname-derived
-// default.
+// default. A whitespace-only settings-file value is treated the same as an
+// absent one (see ResolveCredsFile's doc comment for why), so it correctly
+// falls through to that hostname-derived default instead of "winning" as a
+// literal whitespace device ID.
 func ResolveDeviceID(getenv func(string) string, s Settings) string {
 	if v := getenv("NOTIFY_DEVICE_ID"); !isBlank(v) {
 		return v
+	}
+	if isBlank(s.DeviceID) {
+		return ""
 	}
 	return s.DeviceID
 }

@@ -92,12 +92,9 @@ func (w WindowsUsernameIdentity) Resolve(ctx context.Context) (identity.Identity
 		return identity.Identity{}, fmt.Errorf("windows identity: %w", err)
 	}
 
-	deviceID := ResolveDeviceID(getenv, w.Settings)
-	if deviceID == "" {
-		deviceID, err = defaultWindowsDeviceID()
-		if err != nil {
-			return identity.Identity{}, fmt.Errorf("windows identity: %w", err)
-		}
+	deviceID, err := resolveWindowsDeviceID(getenv, w.Settings)
+	if err != nil {
+		return identity.Identity{}, fmt.Errorf("windows identity: %w", err)
 	}
 
 	slog.Debug("windows identity resolved", "mode", "windows-username", "deviceId", deviceID)

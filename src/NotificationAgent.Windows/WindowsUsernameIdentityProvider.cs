@@ -1,4 +1,6 @@
 // src/NotificationAgent.Windows/WindowsUsernameIdentityProvider.cs
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using NotificationAgent.Core.Identity;
 
@@ -66,17 +68,22 @@ public sealed class WindowsUsernameIdentityProvider : IIdentityProvider
         // `first.last`-style Windows/AD usernames (sanitized to `first_last` instead) — this
         // identity path is the only one available when no AAD client id is configured, so a
         // hard rejection would otherwise leave those accounts with no way to run the agent.
+        //
+        // The allowlist mapping is inherently lossy: two different usernames can sanitize to
+        // the same string (e.g. "user.name" and "user_name" both become "user_name"), which
+        // would otherwise let two different users collide onto one identity/NATS subject. A
+        // hash of the *pre-sanitization* normalized username is appended as a suffix so
+        // collisions in the human-readable prefix can never collide in the full user id. This
+        // exact algorithm (strip domain, lowercase, trim, sanitize, append 8 hex chars of
+        // SHA-256(normalized)) is mirrored identically in the sibling Rust and Go
+        // implementations of this product so all three agree on one user's identity.
         var sanitized = new string(candidate
             .Select(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' ? c : '_')
             .ToArray());
-        if (sanitized.Length == 0 || sanitized.All(c => c == '_'))
-        {
-            throw new InvalidOperationException(
-                $"Windows username '{candidate}' has no usable characters for identity after " +
-                "sanitization.");
-        }
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(candidate));
+        var hash8 = Convert.ToHexString(hash[..4]).ToLowerInvariant();
 
-        var userId = $"u_{sanitized}";
+        var userId = $"u_{sanitized}_{hash8}";
         var deviceId = DeviceIdStore.GetOrCreate(_deviceIdOverride);
         _logger?.IdentityResolvedWindowsUsername(userId, deviceId);
         return ValueTask.FromResult(new AgentIdentity(userId, deviceId));
