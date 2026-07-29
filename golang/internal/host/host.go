@@ -119,41 +119,20 @@ func validateSubjectTemplate(template string) error {
 //
 // This is the canonical, final safety net applied to every identity
 // provider's resolved user ID inside start(), below -- exported so it isn't
-// duplicated by callers that need the same check (e.g. it used to be
-// silently re-implemented in cmd/notify-agent-windows/identity.go). Sources
-// that can legitimately contain characters this rejects (like an OS account
-// name) should sanitize with SanitizeForSubject before this ever sees the
-// value, rather than relying on this to fail closed.
+// duplicated by callers that need the same check. Sources whose raw value
+// isn't under this product's control and can legitimately contain characters
+// this rejects (like an OS account name) should derive a subject-safe
+// identity of their own before this ever sees the value (e.g.
+// cmd/notify-agent-windows/identity.go's userIDFromWindowsUsername, which
+// sanitizes and hashes a raw Windows username into this product's "u_{...}"
+// shape) rather than relying on this to fail closed -- but every derived
+// user ID still passes through here as a final, generic defense-in-depth
+// check, for consistency with every other identity provider.
 func ValidateUserIDForSubject(userID string) error {
 	if strings.ContainsAny(userID, ".*>") {
 		return fmt.Errorf("user ID %q must not contain NATS subject wildcard/delimiter characters ('.', '*', '>')", userID)
 	}
 	return nil
-}
-
-// SanitizeForSubject replaces every rune outside the lowercase-alphanumeric
-// plus '_'/'-' allowlist with '_'. It exists for identity sources whose raw
-// value isn't under this product's control and commonly contains characters
-// NATS subjects can't safely carry -- e.g. a Windows account name, which may
-// contain spaces ("John Doe") or dots ("john.doe"), both completely ordinary
-// account name shapes. Rejecting those outright (as ValidateUserIDForSubject
-// does for a final resolved user ID) would leave such a user with no way to
-// run the agent at all; sanitizing instead guarantees a usable, unique-enough
-// subject-safe identity fragment without ever failing on account name shape
-// alone. Callers combine this with a caller-specific prefix (e.g. "u_") and
-// should still treat an empty or all-"_" result as an error -- sanitization
-// alone can't rescue a genuinely empty input.
-func SanitizeForSubject(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	return b.String()
 }
 
 // deps bundles the pieces of Host construction that tests need to override

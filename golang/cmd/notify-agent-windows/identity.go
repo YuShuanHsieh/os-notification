@@ -18,18 +18,20 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
 )
 
 // userIDFromWindowsUsername normalizes a raw Windows username (as returned
 // by GetUserNameW, which may be qualified as "DOMAIN\username") into this
 // product's "u_{...}" identity shape -- lowercased, matching the shape
 // other identity sources in this product use (e.g. "u_{oid}" for AAD) --
-// and sanitizes it to be safe to embed in a NATS subject.
+// sanitized to be safe to embed in a NATS subject, and suffixed with a short
+// hash of the normalized (pre-sanitization) username so the mapping stays
+// injective (collision-resistant).
 //
 // Windows account names are not under this product's control and commonly
 // contain characters a NATS subject can't safely carry -- a space ("John
@@ -39,25 +41,56 @@ import (
 // NOTIFY_USER_ID), rejecting such a username outright would leave that user
 // with no way to run the agent at all. So, unlike a resolved user ID from an
 // arbitrary source (which internal/host.ValidateUserIDForSubject rejects
-// outright as a final safety net), a raw OS username is sanitized via
-// internal/host.SanitizeForSubject instead -- replacing every character
-// outside [a-z0-9_-] with '_' -- rather than duplicating that character-class
-// logic here.
+// outright as a final safety net), a raw OS username is sanitized instead --
+// replacing every character outside [a-z0-9_-] with '_'.
+//
+// Sanitization alone would be lossy: two genuinely different usernames can
+// sanitize to the identical string (e.g. "user.name" and "user_name" both
+// sanitize to "user_name"), which would collide two different users onto one
+// identity/NATS subject. To stay injective, the first 8 hex characters of
+// SHA-256(normalized username) are appended as a suffix -- computed from the
+// normalized string *before* sanitization, so two inputs that sanitize
+// identically still get different hashes and therefore different final user
+// IDs. This exact algorithm (sanitize + hash-of-normalized suffix) is shared
+// verbatim across this product's C# and Rust Windows-head implementations,
+// which have the identical bug/fix; keep them in sync if this changes.
 func userIDFromWindowsUsername(raw string) (string, error) {
 	name := raw
 	if idx := strings.LastIndexByte(name, '\\'); idx >= 0 {
 		name = name[idx+1:]
 	}
-	name = strings.TrimSpace(name)
-	if name == "" {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
 		return "", fmt.Errorf("windows username %q is empty after stripping any domain prefix", raw)
 	}
 
-	sanitized := host.SanitizeForSubject(strings.ToLower(name))
-	if sanitized == "" || strings.Trim(sanitized, "_") == "" {
-		return "", fmt.Errorf("windows username %q has no usable characters after sanitization", raw)
+	sanitized := sanitizeForIdentity(normalized)
+	sum := sha256.Sum256([]byte(normalized))
+	hash8 := hex.EncodeToString(sum[:4])
+	return fmt.Sprintf("u_%s_%s", sanitized, hash8), nil
+}
+
+// sanitizeForIdentity replaces every rune outside the lowercase-alphanumeric
+// plus '_'/'-' allowlist with '_'. It exists for identity sources whose raw
+// value isn't under this product's control and commonly contains characters
+// NATS subjects can't safely carry -- e.g. a Windows account name. This is
+// only ever used as one ingredient (alongside the hash suffix above) of
+// userIDFromWindowsUsername's injective encoding, not a generic
+// subject-safety check on its own -- that's internal/host.ValidateUserIDForSubject,
+// which every identity provider's final resolved user ID (including this
+// one's) still passes through as a defense-in-depth check inside
+// host.start().
+func sanitizeForIdentity(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
 	}
-	return "u_" + sanitized, nil
+	return b.String()
 }
 
 // defaultWindowsDeviceID returns "d-{lowercase hostname}", the same default

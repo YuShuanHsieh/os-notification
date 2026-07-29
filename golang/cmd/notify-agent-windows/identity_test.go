@@ -2,33 +2,40 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
 )
 
+// userIDPattern matches userIDFromWindowsUsername's output shape:
+// "u_{sanitized}_{8 lowercase hex hash chars}". The sanitized portion may
+// itself be empty (e.g. an all-unusable-characters username still produces
+// a valid, non-empty, unique userID thanks to the hash suffix -- see
+// TestUserIDFromWindowsUsername_AllUnusableCharactersStillProducesValidID).
+var userIDPattern = regexp.MustCompile(`^u_[a-z0-9_-]*_[0-9a-f]{8}$`)
+
 func TestUserIDFromWindowsUsername(t *testing.T) {
 	tests := []struct {
-		name    string
-		raw     string
-		want    string
-		wantErr bool
+		name       string
+		raw        string
+		wantPrefix string // expected "u_{sanitized}_" prefix, sans hash suffix
+		wantErr    bool
 	}{
-		{"plain username", "jdoe", "u_jdoe", false},
-		{"mixed case lowercased", "JDoe", "u_jdoe", false},
-		{"domain-qualified strips domain", `CONTOSO\jdoe`, "u_jdoe", false},
-		{"domain-qualified mixed case", `Contoso\JDoe`, "u_jdoe", false},
-		{"surrounding whitespace trimmed", "  jdoe  ", "u_jdoe", false},
+		{"plain username", "jdoe", "u_jdoe_", false},
+		{"mixed case lowercased", "JDoe", "u_jdoe_", false},
+		{"domain-qualified strips domain", `CONTOSO\jdoe`, "u_jdoe_", false},
+		{"domain-qualified mixed case", `Contoso\JDoe`, "u_jdoe_", false},
+		{"surrounding whitespace trimmed", "  jdoe  ", "u_jdoe_", false},
 		{"blank after stripping domain prefix errors", `CONTOSO\`, "", true},
 		{"empty raw errors", "", "", true},
 		{"whitespace only errors", "   ", "", true},
-		{"space sanitized (common Windows account name shape)", "John Doe", "u_john_doe", false},
-		{"dot sanitized", "john.doe", "u_john_doe", false},
-		{"asterisk sanitized", "user*name", "u_user_name", false},
-		{"greater-than sanitized", "user>name", "u_user_name", false},
-		{"domain-qualified username with dot sanitized", `CONTOSO\j.doe`, "u_j_doe", false},
-		{"all-unusable characters after sanitization errors", "***", "", true},
+		{"space sanitized (common Windows account name shape)", "John Doe", "u_john_doe_", false},
+		{"dot sanitized", "john.doe", "u_john_doe_", false},
+		{"asterisk sanitized", "user*name", "u_user_name_", false},
+		{"greater-than sanitized", "user>name", "u_user_name_", false},
+		{"domain-qualified username with dot sanitized", `CONTOSO\j.doe`, "u_j_doe_", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -42,10 +49,73 @@ func TestUserIDFromWindowsUsername(t *testing.T) {
 			if err != nil {
 				t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", tt.raw, err)
 			}
-			if got != tt.want {
-				t.Fatalf("userIDFromWindowsUsername(%q) = %q, want %q", tt.raw, got, tt.want)
+			if !userIDPattern.MatchString(got) {
+				t.Fatalf("userIDFromWindowsUsername(%q) = %q, does not match pattern %s", tt.raw, got, userIDPattern.String())
+			}
+			if !strings.HasPrefix(got, tt.wantPrefix) {
+				t.Fatalf("userIDFromWindowsUsername(%q) = %q, want prefix %q", tt.raw, got, tt.wantPrefix)
 			}
 		})
+	}
+}
+
+// TestUserIDFromWindowsUsername_Deterministic verifies that calling the
+// function twice with the same input always produces the same output --
+// required since the same Windows account must always resolve to the same
+// identity/NATS subject across agent restarts.
+func TestUserIDFromWindowsUsername_Deterministic(t *testing.T) {
+	for _, raw := range []string{"jdoe", "John Doe", `CONTOSO\j.doe`, "***"} {
+		first, err := userIDFromWindowsUsername(raw)
+		if err != nil {
+			t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", raw, err)
+		}
+		second, err := userIDFromWindowsUsername(raw)
+		if err != nil {
+			t.Fatalf("userIDFromWindowsUsername(%q) unexpected error on second call: %v", raw, err)
+		}
+		if first != second {
+			t.Fatalf("userIDFromWindowsUsername(%q) is not deterministic: %q != %q", raw, first, second)
+		}
+	}
+}
+
+// TestUserIDFromWindowsUsername_CollidingSanitizedPrefixesStayDistinct is the
+// key regression test for the bug this fix addresses: "user.name" and
+// "user_name" both sanitize to the identical prefix "user_name" (a '.' and a
+// pre-existing '_' both survive/collapse to '_'), which under the old,
+// hash-less sanitize-only scheme produced the exact same final user ID for
+// two genuinely different usernames -- silently colluding two different
+// users onto one identity/NATS subject. The hash-of-normalized-string suffix
+// must keep them distinct.
+func TestUserIDFromWindowsUsername_CollidingSanitizedPrefixesStayDistinct(t *testing.T) {
+	a, err := userIDFromWindowsUsername("user.name")
+	if err != nil {
+		t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", "user.name", err)
+	}
+	b, err := userIDFromWindowsUsername("user_name")
+	if err != nil {
+		t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", "user_name", err)
+	}
+	if a == b {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q and userIDFromWindowsUsername(%q) = %q, want distinct user IDs for distinct usernames", "user.name", a, "user_name", b)
+	}
+}
+
+// TestUserIDFromWindowsUsername_AllUnusableCharactersStillProducesValidID
+// covers the case the previous review round treated as an error (a username
+// that sanitizes to nothing usable, e.g. all-asterisks): the hash suffix
+// guarantees a non-empty, valid, unique-enough user ID regardless of what
+// the sanitized prefix looks like, so this is no longer an error case.
+func TestUserIDFromWindowsUsername_AllUnusableCharactersStillProducesValidID(t *testing.T) {
+	got, err := userIDFromWindowsUsername("***")
+	if err != nil {
+		t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", "***", err)
+	}
+	if !userIDPattern.MatchString(got) {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q, does not match pattern %s", "***", got, userIDPattern.String())
+	}
+	if err := host.ValidateUserIDForSubject(got); err != nil {
+		t.Fatalf("host.ValidateUserIDForSubject(%q) = %v, want nil", got, err)
 	}
 }
 
@@ -66,8 +136,8 @@ func TestUserIDFromWindowsUsernameProducesSubscribableSubject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", "John Doe", err)
 	}
-	if want := "u_john_doe"; userID != want {
-		t.Fatalf("userIDFromWindowsUsername(%q) = %q, want %q", "John Doe", userID, want)
+	if want := "u_john_doe_"; !strings.HasPrefix(userID, want) {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q, want prefix %q", "John Doe", userID, want)
 	}
 	if strings.ContainsAny(userID, " \t\r\n") {
 		t.Fatalf("userIDFromWindowsUsername(%q) = %q, must not contain whitespace (NATS subjects can't carry it)", "John Doe", userID)
