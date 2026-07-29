@@ -26,13 +26,26 @@ public class NatsUrlRedactorTests
     }
 
     [Fact]
-    public void Redact_returns_input_unchanged_when_it_does_not_parse_as_an_absolute_uri()
+    public void Redact_returns_a_safe_marker_when_it_does_not_parse_as_an_absolute_uri()
     {
         var notAUrl = "not a url";
 
         var redacted = NatsUrlRedactor.Redact(notAUrl);
 
-        Assert.Equal(notAUrl, redacted);
+        Assert.Equal(NatsUrlRedactor.InvalidUrlMarker, redacted);
+    }
+
+    [Fact]
+    public void Redact_replaces_malformed_input_containing_embedded_userinfo_with_the_marker()
+    {
+        // Even though this unparseable string still contains a credential-like substring, it
+        // must never leak through verbatim: failing to parse must fail closed.
+        var malformed = "not a url but has user:supersecret@ embedded in it";
+
+        var redacted = NatsUrlRedactor.Redact(malformed);
+
+        Assert.Equal(NatsUrlRedactor.InvalidUrlMarker, redacted);
+        Assert.DoesNotContain("supersecret", redacted);
     }
 
     [Fact]
