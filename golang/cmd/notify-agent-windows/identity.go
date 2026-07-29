@@ -104,3 +104,19 @@ func defaultWindowsDeviceID() (string, error) {
 	}
 	return "d-" + strings.ToLower(hostname), nil
 }
+
+// resolveWindowsDeviceID applies ResolveDeviceID's env-then-file precedence
+// and falls back to defaultWindowsDeviceID's hostname-derived default when
+// neither tier supplies one. This is the exact device-ID resolution
+// WindowsUsernameIdentity.Resolve (identity_windows.go) performs -- factored
+// out here, in this file with no `//go:build windows` constraint, so the
+// full "settings file -> env -> hostname fallback" chain (including the
+// whitespace-only-settings-value case ResolveDeviceID now handles) is
+// testable on any platform without needing the real GetUserNameW syscall
+// identity_windows.go's Resolve otherwise depends on.
+func resolveWindowsDeviceID(getenv func(string) string, s Settings) (string, error) {
+	if deviceID := ResolveDeviceID(getenv, s); deviceID != "" {
+		return deviceID, nil
+	}
+	return defaultWindowsDeviceID()
+}

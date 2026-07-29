@@ -97,6 +97,17 @@ func TestParseSettings_AllFields(t *testing.T) {
 }
 
 func TestResolveHostOptions_Precedence(t *testing.T) {
+	// Explicitly clear all three host-option environment variables so the
+	// "built-in defaults" baseline below is deterministic regardless of
+	// whatever the ambient process environment happens to have set --
+	// without this, a real NOTIFY_NATS_URL (or similar) set when tests run
+	// would make envOpts silently reflect that value instead of the
+	// defaults this test assumes, and the test could pass or fail for the
+	// wrong reason. t.Setenv also restores the prior value after the test.
+	t.Setenv("NOTIFY_NATS_URL", "")
+	t.Setenv("NOTIFY_SUBJECT_TEMPLATE", "")
+	t.Setenv("NOTIFY_ACK_SUBJECT", "")
+
 	envOpts := host.OptionsFromEnv() // built-in defaults, since no env vars set in this test process
 
 	t.Run("file value used when env unset", func(t *testing.T) {
