@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,7 +55,10 @@ func (r *WindowsRenderer) Show(ctx context.Context, req toast.ToastRequest) (tim
 	xml := windowstoast.BuildToastXML(req, imagePath)
 
 	if err := showToastViaPowerShell(ctx, xml); err != nil {
-		slog.Error("windows renderer: toast submission failed", "error", err, "hasImage", imagePath != "")
+		// Not logged here: host.render (internal/host/host.go) already logs
+		// every renderer.Show failure at Error level -- logging it again
+		// here would double-report the exact same failure. The wrapped
+		// error is still returned so the caller has the full detail.
 		return time.Time{}, fmt.Errorf("windows renderer: %w", err)
 	}
 	return time.Now(), nil

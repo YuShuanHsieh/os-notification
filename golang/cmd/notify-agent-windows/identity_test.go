@@ -206,7 +206,7 @@ func TestDefaultWindowsDeviceID(t *testing.T) {
 	if got == "" {
 		t.Fatal("defaultWindowsDeviceID returned an empty string")
 	}
-	if got[:2] != "d-" {
+	if !strings.HasPrefix(got, "d-") {
 		t.Fatalf("defaultWindowsDeviceID = %q, want d- prefix", got)
 	}
 }

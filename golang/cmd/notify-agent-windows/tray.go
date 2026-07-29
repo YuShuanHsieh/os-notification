@@ -97,8 +97,11 @@ func (a *trayApp) startAgent() {
 	idp := WindowsUsernameIdentity{Getenv: os.Getenv, Settings: a.settings}
 	h, err := host.Start(context.Background(), opts, idp, renderer, authProvider)
 	if err != nil {
+		// slog.Error alone is sufficient here: main.go installs a text
+		// handler that writes to os.Stderr, so a separate raw
+		// fmt.Fprintf(os.Stderr, ...) would just double-report this same
+		// failure, once structured and once raw.
 		slog.Error("agent failed to start", "error", err)
-		fmt.Fprintf(os.Stderr, "notify-agent-windows: agent failed to start: %v\n", err)
 		systray.SetTooltip(fmt.Sprintf("%s (agent failed to start)", baseTooltip))
 		return
 	}
