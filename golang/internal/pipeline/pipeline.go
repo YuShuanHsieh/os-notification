@@ -14,7 +14,7 @@ package pipeline
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +53,15 @@ type queueItem struct {
 	receivedAt time.Time
 }
 
+// queueFullWarnInterval bounds how often TryEnqueue logs its queue-full
+// warning under sustained overload. Without this, the exact scenario the
+// warning exists to surface (sustained overload) is also the scenario that
+// would flood the log with an identical line thousands of times -- itself
+// an operational problem (log volume, noise drowning out other signals).
+// The cumulative DroppedQueueFull counter still reflects every drop
+// regardless of whether a given drop's warning gets logged.
+const queueFullWarnInterval = 10 * time.Second
+
 // Pipeline is a bounded intake queue with a fixed worker pool. Overload drops
 // payloads at the queue boundary -- memory stays bounded, delivery stays
 // best-effort, and every drop is counted via DroppedQueueFull.
@@ -64,6 +73,9 @@ type Pipeline struct {
 	clk        clock.Clock
 
 	droppedQueueFull atomic.Uint64
+
+	queueFullWarnMu     sync.Mutex
+	queueFullLastWarnAt time.Time
 }
 
 // New constructs a Pipeline. dedupCache suppresses duplicates by
@@ -94,8 +106,29 @@ func (p *Pipeline) TryEnqueue(payload []byte) bool {
 	case p.queue <- item:
 		return true
 	default:
-		p.droppedQueueFull.Add(1)
+		total := p.droppedQueueFull.Add(1)
+		p.warnQueueFull(total)
 		return false
+	}
+}
+
+// warnQueueFull logs the queue-full warning at most once per
+// queueFullWarnInterval, regardless of how many drops occur in that window --
+// see queueFullWarnInterval's doc comment. total (the cumulative count
+// including this drop) is always included in the log line so an operator can
+// see how many were dropped even between logged occurrences.
+func (p *Pipeline) warnQueueFull(total uint64) {
+	now := p.clk.Now()
+
+	p.queueFullWarnMu.Lock()
+	shouldLog := now.Sub(p.queueFullLastWarnAt) >= queueFullWarnInterval
+	if shouldLog {
+		p.queueFullLastWarnAt = now
+	}
+	p.queueFullWarnMu.Unlock()
+
+	if shouldLog {
+		slog.Warn("pipeline: dropped payload, intake queue full", "queueCapacity", cap(p.queue), "totalDropped", total)
 	}
 }
 
@@ -147,7 +180,7 @@ func (p *Pipeline) workerLoop(ctx context.Context) {
 func (p *Pipeline) process(item queueItem) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("pipeline: recovered from panic while processing event: %v", r)
+			slog.Error("pipeline: recovered from panic while processing event", "panic", r)
 		}
 	}()
 

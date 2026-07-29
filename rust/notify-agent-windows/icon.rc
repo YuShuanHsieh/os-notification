@@ -1,1 +1,6 @@
+// assets/app.ico is a copy of the repo-root canonical icon (../../assets/app.ico,
+// byte-identical). All three language heads (C#, Rust, Go) embed copies of that
+// one source; if the icon needs to change, replace the repo-root copy first,
+// then re-copy it here (and to the other two heads) rather than editing this
+// copy directly.
 1 ICON "assets/app.ico"

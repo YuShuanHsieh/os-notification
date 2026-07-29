@@ -1,8 +1,11 @@
 package pipeline_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +15,36 @@ import (
 	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/pipeline"
 )
+
+// logCapture replaces slog's package-level default logger (restored via
+// t.Cleanup) with one that writes into an in-memory buffer, so a test can
+// count how many times a particular message was logged without real I/O or
+// depending on test output ordering.
+type logCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *logCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *logCapture) count(substr string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Count(c.buf.String(), substr)
+}
+
+func captureLogs(t *testing.T) *logCapture {
+	t.Helper()
+	prev := slog.Default()
+	lc := &logCapture{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(lc, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return lc
+}
 
 func criticalPayload(id string) []byte {
 	return []byte(fmt.Sprintf(
@@ -201,6 +234,52 @@ func TestTryEnqueueRejectsWhenQueueFullWithoutRun(t *testing.T) {
 	}
 	if got := p.DroppedQueueFull(); got != 2 {
 		t.Fatalf("DroppedQueueFull() = %d, want 2", got)
+	}
+}
+
+// TestQueueFullWarningIsRateLimited proves the fix for the log-flood
+// concern: sustained overload is exactly the scenario the queue-full warning
+// exists to surface, but logging it on every single drop would flood the log
+// with an identical line under that same sustained overload. Many rapid
+// drops (no time elapsed on the pipeline's own clock) must produce only one
+// warning line, while DroppedQueueFull still counts every drop; advancing
+// the clock past the rate-limit window allows exactly one more.
+func TestQueueFullWarningIsRateLimited(t *testing.T) {
+	clk := clock.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 1}, newDedupCache(), rec.onObserved, clk)
+
+	logs := captureLogs(t)
+
+	if !p.TryEnqueue(criticalPayload("e0")) {
+		t.Fatal("1st TryEnqueue: got false, want true (within capacity)")
+	}
+
+	const dropAttempts = 50
+	for i := 0; i < dropAttempts; i++ {
+		if p.TryEnqueue(criticalPayload(fmt.Sprintf("drop-%d", i))) {
+			t.Fatalf("TryEnqueue #%d unexpectedly succeeded, want queue full", i)
+		}
+	}
+
+	if got := p.DroppedQueueFull(); got != dropAttempts {
+		t.Fatalf("DroppedQueueFull() = %d, want %d (every drop must still be counted)", got, dropAttempts)
+	}
+	if n := logs.count("intake queue full"); n != 1 {
+		t.Fatalf("queue-full warning logged %d times for %d rapid drops, want exactly 1", n, dropAttempts)
+	}
+
+	// Advancing the clock past the rate-limit window allows exactly one
+	// more logged occurrence for a subsequent drop.
+	clk.Advance(11 * time.Second)
+	if p.TryEnqueue(criticalPayload("drop-after-advance")) {
+		t.Fatal("TryEnqueue after advance unexpectedly succeeded, want queue still full")
+	}
+	if got := p.DroppedQueueFull(); got != dropAttempts+1 {
+		t.Fatalf("DroppedQueueFull() = %d, want %d", got, dropAttempts+1)
+	}
+	if n := logs.count("intake queue full"); n != 2 {
+		t.Fatalf("queue-full warning logged %d times after advancing past the rate-limit window, want exactly 2", n)
 	}
 }
 

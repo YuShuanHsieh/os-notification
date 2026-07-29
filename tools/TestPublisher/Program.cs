@@ -213,7 +213,11 @@ for (var i = 0; i < messages.Count; i++)
 
     if (spec.ImageUrl is not null)
     {
-        content["image"] = new { url = spec.ImageUrl, shape = spec.ImageShape };
+        content["image"] = new
+        {
+            url = spec.ImageUrl,
+            shape = spec.ImageShape,
+        };
     }
 
     var payload = new Dictionary<string, object>
@@ -226,7 +230,11 @@ for (var i = 0; i < messages.Count; i++)
     };
     if (spec.ActionLabel is not null && spec.ActionUrl is not null)
     {
-        payload["action"] = new { label = spec.ActionLabel, url = spec.ActionUrl };
+        payload["action"] = new
+        {
+            label = spec.ActionLabel,
+            url = spec.ActionUrl,
+        };
     }
 
     payload["classification"] = new
@@ -269,39 +277,75 @@ static int Usage(string error)
 
 internal sealed class PublishSpec
 {
-    public required string UserId { get; set; }
+    public required string UserId
+    {
+        get; set;
+    }
 
     public string Title { get; set; } = string.Empty;
 
     public string Message { get; set; } = string.Empty;
 
-    public string? Secondary { get; set; }
+    public string? Secondary
+    {
+        get; set;
+    }
 
     public string Type { get; set; } = string.Empty;
 
     public string Priority { get; set; } = string.Empty;
 
-    public int Count { get; set; }
+    public int Count
+    {
+        get; set;
+    }
 
-    public string? ImageUrl { get; set; }
+    public string? ImageUrl
+    {
+        get; set;
+    }
 
     public string ImageShape { get; set; } = "circle";
 
-    public string? ActionLabel { get; set; }
+    public string? ActionLabel
+    {
+        get; set;
+    }
 
-    public string? ActionUrl { get; set; }
+    public string? ActionUrl
+    {
+        get; set;
+    }
 
-    public string? AggKey { get; set; }
+    public string? AggKey
+    {
+        get; set;
+    }
 
-    public string? DedupKey { get; set; }
+    public string? DedupKey
+    {
+        get; set;
+    }
 
-    public bool Replaceable { get; set; }
+    public bool Replaceable
+    {
+        get; set;
+    }
 
-    public int DelayMs { get; set; }
+    public int DelayMs
+    {
+        get; set;
+    }
 
-    public List<string>? Messages { get; set; }
+    public List<string>? Messages
+    {
+        get; set;
+    }
 
-    public string? Expect { get; set; }
+    public string? Expect
+    {
+        get; set;
+    }
 
     /// <summary>Today's legacy defaults — byte-compatible with the pre-scenario tool.</summary>
     public static PublishSpec Defaults(string userId) => new()

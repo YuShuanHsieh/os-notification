@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Identity.Client;
 using Microsoft.Identity.Client.Broker;
 using NotificationAgent.Core.Identity;
@@ -12,17 +13,28 @@ public sealed class MsalIdentityProvider : IIdentityProvider
 
     private readonly string _clientId;
     private readonly string _tenantId;
+    private readonly string? _deviceIdOverride;
+    private readonly ILogger? _logger;
 
-    public MsalIdentityProvider(string clientId, string tenantId)
+    public MsalIdentityProvider(
+        string clientId,
+        string tenantId,
+        string? deviceIdOverride = null,
+        ILogger? logger = null)
     {
         _clientId = clientId;
         _tenantId = tenantId;
+        _deviceIdOverride = deviceIdOverride;
+        _logger = logger;
     }
 
     public async ValueTask<AgentIdentity> GetIdentityAsync(CancellationToken ct = default)
     {
+        _logger?.IdentityModeAad(_clientId);
         var result = await AcquireTokenAsync(UserReadScopes, ct).ConfigureAwait(false);
-        return new AgentIdentity($"u_{result.UniqueId}", DeviceIdStore.GetOrCreate());
+        var deviceId = DeviceIdStore.GetOrCreate(_deviceIdOverride);
+        _logger?.IdentityResolvedAad(deviceId);
+        return new AgentIdentity($"u_{result.UniqueId}", deviceId);
     }
 
     /// <summary>Silently acquires an access token for an additional scope, reusing the same
@@ -53,6 +65,7 @@ public sealed class MsalIdentityProvider : IIdentityProvider
         catch (MsalUiRequiredException)
         {
             // POC fallback; production would surface a sign-in prompt via the app UX.
+            _logger?.MsalInteractiveFallback();
             return await app.AcquireTokenInteractive(scopes)
                 .ExecuteAsync(ct).ConfigureAwait(false);
         }
@@ -62,8 +75,19 @@ public sealed class MsalIdentityProvider : IIdentityProvider
 /// <summary>Stable per-install device id under %LOCALAPPDATA% (ack field deviceId).</summary>
 internal static class DeviceIdStore
 {
-    public static string GetOrCreate()
+    /// <param name="overrideValue">A non-blank value (from <c>NOTIFY_DEVICE_ID</c> or the
+    /// settings file's <c>deviceId</c>, feature: app settings file) wins outright and skips
+    /// the file entirely, so operators can pin a reproducible device id. A whitespace-only
+    /// value (e.g. a settings file's <c>"deviceId": "   "</c>) is treated the same as absent,
+    /// so it falls through to the persisted/generated device id instead of "winning" with
+    /// garbage.</param>
+    public static string GetOrCreate(string? overrideValue = null)
     {
+        if (!string.IsNullOrWhiteSpace(overrideValue))
+        {
+            return overrideValue;
+        }
+
         var dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "DesktopNotificationAgent");

@@ -11,6 +11,8 @@ package host
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -61,6 +63,27 @@ func getEnvOr(key, fallback string) string {
 	return v
 }
 
+// redactedURL returns raw with any userinfo (username and/or password)
+// masked, for safe use in log output. A NATS URL can carry a credential
+// directly (e.g. "nats://user:password@host:4222" or a bare token as
+// "nats://token@host:4222"), and the settings file makes it more likely an
+// operator embeds one in natsUrl -- logging it verbatim would leak that
+// credential into whatever consumes these logs. Unlike net/url.URL's own
+// Redacted() method (which masks the password but deliberately leaves the
+// username visible), this masks both, since a bare-token userinfo carries
+// its secret in the username position. If raw doesn't parse as a URL, or
+// has no userinfo at all, it's returned unchanged -- there's nothing to
+// redact.
+func redactedURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	redacted := *u
+	redacted.User = url.UserPassword("***", "")
+	return redacted.Redacted()
+}
+
 // Production defaults for dedup/pipeline sizing (context/contracts-and-invariants.md).
 const (
 	dedupCapacity         = 10_000
@@ -88,12 +111,24 @@ func validateSubjectTemplate(template string) error {
 	return nil
 }
 
-// validateUserIDForSubject rejects a user ID containing NATS subject
+// ValidateUserIDForSubject rejects a user ID containing NATS subject
 // delimiter/wildcard characters. Without this, a user ID of e.g. "*" or ">"
 // substituted into "notify.user.%s.desktop" would silently turn a per-user
 // subscription into a wildcard subscription receiving every user's events --
 // a privacy/correctness issue, not just a malformed subject.
-func validateUserIDForSubject(userID string) error {
+//
+// This is the canonical, final safety net applied to every identity
+// provider's resolved user ID inside start(), below -- exported so it isn't
+// duplicated by callers that need the same check. Sources whose raw value
+// isn't under this product's control and can legitimately contain characters
+// this rejects (like an OS account name) should derive a subject-safe
+// identity of their own before this ever sees the value (e.g.
+// cmd/notify-agent-windows/identity.go's userIDFromWindowsUsername, which
+// sanitizes and hashes a raw Windows username into this product's "u_{...}"
+// shape) rather than relying on this to fail closed -- but every derived
+// user ID still passes through here as a final, generic defense-in-depth
+// check, for consistency with every other identity provider.
+func ValidateUserIDForSubject(userID string) error {
 	if strings.ContainsAny(userID, ".*>") {
 		return fmt.Errorf("user ID %q must not contain NATS subject wildcard/delimiter characters ('.', '*', '>')", userID)
 	}
@@ -158,11 +193,12 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 	if err != nil {
 		return nil, fmt.Errorf("host: resolve identity: %w", err)
 	}
+	slog.Debug("host: identity resolved", "provider", fmt.Sprintf("%T", idp), "userId", ident.UserID, "deviceId", ident.DeviceID)
 
 	if err := validateSubjectTemplate(opts.SubjectTemplate); err != nil {
 		return nil, fmt.Errorf("host: %w", err)
 	}
-	if err := validateUserIDForSubject(ident.UserID); err != nil {
+	if err := ValidateUserIDForSubject(ident.UserID); err != nil {
 		return nil, fmt.Errorf("host: %w", err)
 	}
 
@@ -178,6 +214,7 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 	if err != nil {
 		return nil, fmt.Errorf("host: connect nats: %w", err)
 	}
+	slog.Info("host: connected to nats", "natsUrl", redactedURL(opts.NatsURL))
 
 	h := &Host{
 		nc:         nc,
@@ -200,6 +237,7 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 		return nil, fmt.Errorf("host: subscribe: %w", err)
 	}
 	h.sub = sub
+	slog.Info("host: subscribed", "subject", h.subject)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	h.cancel = cancel
@@ -269,6 +307,7 @@ func (h *Host) render(batch []*model.InboundNotification) {
 	defer cancel()
 	submittedAt, err := h.renderer.Show(renderCtx, req)
 	if err != nil {
+		slog.Error("host: toast render failed", "error", err, "batchSize", len(batch))
 		return
 	}
 
@@ -301,6 +340,7 @@ func (h *Host) publishAck(ack telemetry.Ack) {
 // documented "shutdown is best-effort, not a durable drain guarantee"
 // contract (context/architecture.md).
 func (h *Host) Shutdown(ctx context.Context) error {
+	slog.Info("host: shutting down", "subject", h.subject)
 	if h.cancel != nil {
 		h.cancel()
 	}

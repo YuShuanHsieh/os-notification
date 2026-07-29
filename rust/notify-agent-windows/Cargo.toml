@@ -8,8 +8,19 @@ anyhow = "1"
 async-trait = "0.1"
 chrono = "0.4"
 notify-agent-core = { path = "../notify-agent-core" }
+# Not re-exported from the notify-agent-core path dependency, even though core
+# depends on the same crates — Cargo dependencies aren't transitive across
+# crate boundaries, so the settings-file JSON (de)serialization here needs its
+# own direct dependency.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Same reasoning as serde/serde_json above: notify-agent-core also depends on
+# sha2, but path dependencies aren't transitively exposed, so
+# windows_identity.rs's own SHA-256 hashing needs a direct dependency here too.
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
@@ -29,6 +40,7 @@ windows = { version = "0.58", features = [
     "Win32_Security",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_System_WindowsProgramming", # GetUserNameW, for the default Windows-username identity
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

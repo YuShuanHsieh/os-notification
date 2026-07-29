@@ -18,8 +18,37 @@ this file together.
 - Default acknowledgement subject: `notify.ack.desktop`.
 - `{0}` is formatted with the application user ID returned by
   `IIdentityProvider`.
-- A Windows account name is never the application identity. Production identity
-  uses the Entra object ID prefixed with `u_`; the device ID is stable per install.
+- Production identity uses the Entra object ID prefixed with `u_` (C#/Rust Windows,
+  via AAD/MSAL or device-code sign-in); the device ID is stable per install. The
+  console/dev host's identity is simply the value of `NOTIFY_USER_ID`, unchanged —
+  operators conventionally set that variable to something already shaped like
+  `u_<id>`, but no provider code prepends `u_` itself.
+- Deliberate, documented exception: when AAD isn't configured, the C# and Rust
+  Windows heads each derive a default identity from the Windows username instead of
+  requiring `NOTIFY_USER_ID`, via
+  `NotificationAgent.Windows.WindowsUsernameIdentityProvider` in C# and
+  `rust/notify-agent-windows/src/windows_identity.rs`'s `WindowsUsernameIdentity` in
+  Rust. The username is normalized (domain prefix stripped, lowercased, trimmed)
+  then **sanitized**, not rejected: every character outside `[a-z0-9_-]` (including
+  wildcard/delimiter characters like `.`, `*`, `>`, and whitespace — Windows account
+  names may legitimately contain spaces) is replaced with `_`, since an unsanitized
+  value could otherwise turn a per-user subscription into an accidental wildcard
+  subscription, or (for a value containing whitespace) get silently misrouted by
+  NATS's whitespace-tokenized `SUB` wire format. Because that sanitization alone is
+  lossy — two different usernames can sanitize to the same string (e.g.
+  `"user.name"` and `"user_name"` both become `user_name`) — an 8-hex-character
+  suffix of `SHA-256` over the *normalized, pre-sanitization* username is appended,
+  so the final `u_{sanitized}_{hash8}` stays injective (collision-resistant) even
+  when the readable prefix collides. This exception is scoped to each Windows head;
+  the console host and the AAD/MSAL or device-code sign-in paths are unaffected.
+  `notify-agent-core::identity::EnvIdentity` (Rust's shared, cross-platform
+  `NOTIFY_USER_ID` provider) is unchanged and still backs the Rust console head. The
+  Go Windows head (`golang/cmd/notify-agent-windows`) applies the identical
+  sanitize-plus-hash derivation unconditionally rather than as an AAD fallback,
+  since this Go port has no AAD/MSAL/device-code identity path at all (see
+  `identity.go`/`identity_windows.go` and `golang/internal/identity`'s package
+  doc). `golang/internal/identity.EnvIdentity` (the Go console head's
+  `NOTIFY_USER_ID` provider) is unchanged.
 
 ## Inbound JSON
 

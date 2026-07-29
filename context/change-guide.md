@@ -41,7 +41,10 @@ for exercising new user-visible fields.
 ## Change identity or configuration
 
 - Preserve the `IIdentityProvider` boundary and do not substitute the OS account
-  name for application identity.
+  name for application identity, except the already-documented, narrowly scoped
+  Windows-head exceptions (C#, Rust, Go — see `contracts-and-invariants.md`).
+  Do not broaden that exception to the console/dev hosts or to new call sites
+  without updating the contract and this guidance together.
 - Trace environment ownership across `AgentOptions`,
   `EnvironmentIdentityProvider`, Windows `Program.cs`, `MsalIdentityProvider`, and
   `TestPublisher`.

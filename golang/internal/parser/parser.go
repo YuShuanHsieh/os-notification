@@ -10,6 +10,7 @@ package parser
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -84,7 +85,17 @@ type wireTimestamps struct {
 // field (eventId, target.userId, content.title, content.message). The
 // caller is expected to drop the event silently on error; Parse never
 // panics on untrusted input.
-func Parse(payload []byte) (*model.InboundNotification, error) {
+func Parse(payload []byte) (evt *model.InboundNotification, err error) {
+	// Log just the error reason on any failure, never the raw payload
+	// itself (title/message/etc. are user-controlled content that may be
+	// large or sensitive -- see the package doc's "drop just the image"
+	// note for the same principle applied elsewhere in this parser).
+	defer func() {
+		if err != nil {
+			slog.Debug("parser: failed to parse inbound payload", "error", err, "payloadBytes", len(payload))
+		}
+	}()
+
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("empty payload")
 	}

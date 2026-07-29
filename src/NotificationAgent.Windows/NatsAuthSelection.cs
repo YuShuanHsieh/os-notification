@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NotificationAgent.Core.Nats;
 
 namespace NotificationAgent.Windows;
@@ -11,7 +12,8 @@ internal static class NatsAuthSelection
         string? authServiceScope,
         string? credsFile,
         MsalIdentityProvider? msalIdentity,
-        HttpClient httpClient)
+        HttpClient httpClient,
+        ILogger? logger = null)
     {
         if (authServiceUrl is { Length: > 0 })
         {
@@ -36,12 +38,29 @@ internal static class NatsAuthSelection
                     "otherwise be sent in cleartext).");
             }
 
+            // authServiceUrl can carry credentials as userinfo (e.g.
+            // https://user:pass@host/...), so redact it the same way the NATS connection URL
+            // is redacted before logging (see NatsUrlRedactor). Guarded by IsEnabled (rather
+            // than relying solely on the source-generated log method's internal check) so the
+            // Redact call itself isn't evaluated when Debug logging is disabled (CA1873).
+            if (logger is not null && logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.NatsAuthModeExternalService(NatsUrlRedactor.Redact(authServiceUrl));
+            }
+
             return new ExternalAuthServiceNatsAuthProvider(
                 uri,
                 ct => msalIdentity.GetAccessTokenAsync(authServiceScope, ct),
                 httpClient);
         }
 
-        return credsFile is { Length: > 0 } ? new CredsFileNatsAuthProvider(credsFile) : null;
+        if (credsFile is { Length: > 0 })
+        {
+            logger?.NatsAuthModeCredsFile(credsFile);
+            return new CredsFileNatsAuthProvider(credsFile);
+        }
+
+        logger?.NatsAuthModeNone();
+        return null;
     }
 }

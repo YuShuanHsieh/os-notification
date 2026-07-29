@@ -50,10 +50,11 @@ IToastRenderer ──► ack: submitted_to_windows ──► NATS notify.ack.des
 
 ### Identity
 
-The Windows account name is never used as identity. `IIdentityProvider` resolves the application user ID and device ID:
+`IIdentityProvider` resolves the application user ID and device ID. The Windows account name itself is not used as identity for the primary paths (AAD/MSAL sign-in, or the console host's environment-variable identity):
 
-- **Windows (production):** `MsalIdentityProvider` — WAM-brokered silent MSAL sign-in; user ID is the Entra object ID (`u_{oid}`), device ID is a stable per-install GUID under `%LOCALAPPDATA%\DesktopNotificationAgent`.
-- **Dev/Linux:** `EnvironmentIdentityProvider` — reads `NOTIFY_USER_ID` (required) and `NOTIFY_DEVICE_ID` (defaults to `d-{machinename}`).
+- **Windows (AAD, when `NOTIFY_AAD_CLIENT_ID` is set):** `MsalIdentityProvider` — WAM-brokered silent MSAL sign-in; user ID is the Entra object ID (`u_{oid}`), device ID is a stable per-install GUID under `%LOCALAPPDATA%\DesktopNotificationAgent`.
+- **Windows (default, no AAD configured):** `WindowsUsernameIdentityProvider` — a deliberate, narrow exception derives the user ID from the signed-in Windows username instead, so `NOTIFY_USER_ID` is no longer required (or read) by the Windows head. The username is normalized (domain prefix stripped, lowercased, trimmed) then sanitized — every character outside `[a-z0-9_-]` (including NATS subject wildcard/delimiter characters like `.`/`*`/`>`, and whitespace) is replaced with `_`, rather than rejected — and suffixed with an 8-hex-character `SHA-256` digest of the pre-sanitization username so two usernames that sanitize to the same string still resolve to different identities: `u_{sanitized}_{hash8}`.
+- **Console/dev (Linux):** `EnvironmentIdentityProvider` — reads `NOTIFY_USER_ID` (required) and `NOTIFY_DEVICE_ID` (defaults to `d-{machinename}`). Unchanged; still the only identity source for `NotificationAgent.ConsoleHost`.
 
 ### Wire contracts
 
@@ -105,10 +106,11 @@ dotnet test tests/NotificationAgent.Windows.Tests
 | `NOTIFY_NATS_CREDS_FILE` | *(unset → no auth)* | Both hosts: path to a NATS `.creds` file |
 | `NOTIFY_NATS_AUTH_SERVICE_URL` | *(unset → falls back to `NOTIFY_NATS_CREDS_FILE`, then no auth)* | Windows: HTTPS endpoint that mints a NATS JWT for the agent's AAD identity |
 | `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | *(required with `NOTIFY_NATS_AUTH_SERVICE_URL`)* | Windows: AAD scope requested when calling the auth service |
-| `NOTIFY_USER_ID` | *(required in dev)* | `EnvironmentIdentityProvider` |
-| `NOTIFY_DEVICE_ID` | `d-{machinename}` | `EnvironmentIdentityProvider` |
-| `NOTIFY_AAD_CLIENT_ID` | *(unset → env identity)* | Windows head: enables MSAL/WAM |
+| `NOTIFY_USER_ID` | *(required in dev)* | `EnvironmentIdentityProvider` (`NotificationAgent.ConsoleHost`). **Not read by the Windows head** — see "Identity" above and the settings-file section below |
+| `NOTIFY_DEVICE_ID` | `d-{machinename}` | `EnvironmentIdentityProvider`; the Windows head also accepts it (or the settings file's `deviceId`) to override the persisted per-install device id file |
+| `NOTIFY_AAD_CLIENT_ID` | *(unset → Windows-username identity)* | Windows head: enables MSAL/WAM |
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | Windows head (with client ID) |
+| `NOTIFY_LOG_LEVEL` | `Information` | Windows head only: minimum log level (`Trace`/`Debug`/`Information`/`Warning`/`Error`/`Critical`/`None`) |
 
 `NOTIFY_NATS_URL` also accepts a `wss://` (NATS WebSocket) URL — the NATS client
 detects the transport from the URL scheme automatically, so no other configuration
@@ -119,6 +121,39 @@ NATS auth is selected presence-based, same style as identity: on Windows,
 `NOTIFY_NATS_AUTH_SERVICE_SCOPE`) takes priority over `NOTIFY_NATS_CREDS_FILE`,
 which both hosts support; if neither is set, the connection is unauthenticated
 (today's default).
+
+### App settings file (Windows only)
+
+**All three** Windows heads (C#, Rust, Go) read an optional JSON settings file at
+`%LOCALAPPDATA%\DesktopNotificationAgent\settings.json`, so a deployed agent can be
+configured without setting environment variables. Every field is optional. The C#
+and Rust schemas are shown below (they support AAD and the external NATS auth
+service); the Go schema is intentionally narrower — `natsUrl`, `subjectTemplate`,
+`ackSubject`, `natsCredsFile`, `deviceId`, `logLevel` only — since the Go head has
+no AAD/external-auth-service support (see `golang/README.md`).
+
+```json
+{
+  "natsUrl": "nats://127.0.0.1:4222",
+  "subjectTemplate": "notify.user.{0}.desktop",
+  "ackSubject": "notify.ack.desktop",
+  "natsCredsFile": "",
+  "natsAuthServiceUrl": "",
+  "natsAuthServiceScope": "",
+  "aadClientId": "",
+  "aadTenantId": "organizations",
+  "deviceId": "",
+  "logLevel": "Information"
+}
+```
+
+Precedence per field is **environment variable (if set and non-blank) > settings
+file value (if present and non-blank) > built-in default**. A missing file is
+normal — it is never created or required — and a malformed file logs a warning and
+falls back to defaults rather than crashing startup. The console host (any
+language) does not read this file at all; it's Windows-heads-only. See
+`rust/README.md` and `golang/README.md` for each language's exact schema and
+precedence notes.
 
 ## How to use
 
@@ -148,21 +183,25 @@ The agent prints an `observed_by_agent` ack per event immediately, batches the t
 ```powershell
 dotnet build src/NotificationAgent.Windows
 $env:NOTIFY_NATS_URL = "nats://your-nats-host:4222"
-# Either dev identity...
-$env:NOTIFY_USER_ID = "u_demo"
-# ...or real Entra identity via WAM:
+# Default: no AAD client id, so identity is derived from the signed-in Windows
+# username instead (`u_{lowercased username}`) -- NOTIFY_USER_ID is not read here.
+# ...or use real Entra identity via WAM instead:
 # $env:NOTIFY_AAD_CLIENT_ID = "<app registration client id>"
 # $env:NOTIFY_AAD_TENANT_ID = "<tenant id>"    # optional, defaults to "organizations"
 dotnet run --project src/NotificationAgent.Windows
 ```
 
-It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `Microsoft.Toolkit.Uwp.Notifications`, and uses Windows protocol activation to open a validated HTTPS action URL in the default browser. It has no additional notification runtime dependency.
+The console logs the resolved subject at startup (`Information` level, e.g. "Agent
+started successfully; subscribed to subject notify.user.u_jdoe.desktop") — use that
+exact user ID when targeting `TestPublisher` at this agent below.
+
+It runs unpackaged (no MSIX), enforces one instance per session via a `Local\` mutex, submits native toasts through `Microsoft.Toolkit.Uwp.Notifications`, uses Windows protocol activation to open a validated HTTPS action URL in the default browser, and shows a custom tray/exe icon (`src/NotificationAgent.Windows/app.ico`, embedded into the `.exe` via `<ApplicationIcon>` and reused for the tray `NotifyIcon`). It has no additional notification runtime dependency.
 
 `Microsoft.Toolkit.Uwp.Notifications` 7.1.3 is retained as an explicit legacy compatibility dependency because it supports unpackaged desktop notifications without introducing the Windows App SDK runtime. Revisit this choice when a maintained alternative provides the same standalone deployment model.
 
 ### Verify the avatar image renders correctly (Windows)
 
-With the Windows head running (above) and pointed at a NATS server reachable from wherever you run `TestPublisher` (the same machine, or any box that can reach `NOTIFY_NATS_URL`), publish one event with an image URL to reproduce a Teams-presence-style toast (circular avatar + two-line text):
+With the Windows head running (above) and pointed at a NATS server reachable from wherever you run `TestPublisher` (the same machine, or any box that can reach `NOTIFY_NATS_URL`), publish one event with an image URL to reproduce a Teams-presence-style toast (circular avatar + two-line text). Replace `u_demo` below with the user ID the Windows head actually logged at startup (see above) unless you set `NOTIFY_AAD_CLIENT_ID`/a real sign-in:
 
 ```bash
 dotnet run --project tools/TestPublisher -- u_demo "Tony Redmond" "is now available" critical 1 "https://i.pravatar.cc/300"
@@ -192,6 +231,20 @@ With the Windows head running (above), confirm the tray icon and its Close actio
 2. Right-click it — the menu shows "Version 0.1.0" (disabled, not clickable) and a "Close" item.
 3. Click "Close". Within a few seconds the tray icon disappears and the process exits — confirm `DesktopAgent.exe` is gone from Task Manager.
 4. **Failure-path check:** point `NOTIFY_NATS_URL` at an unreachable server (e.g. `nats://127.0.0.1:4223`) and relaunch. The tray icon should still appear, its tooltip should mention the agent failed to start, and "Close" should still terminate the process within the same few seconds.
+
+### Changing the tray icon
+
+All three Windows heads (C#, Rust, Go) render the same custom icon, sourced from one canonical file: **`assets/app.ico`** at the repo root. Replace that file first — **it must use classic BMP/DIB-encoded icon frames, not PNG-compressed ones** (e.g. Pillow: `img.save(..., format="ICO", sizes=[...], bitmap_format="bmp")` — its default is PNG). PNG-compressed `.ico` frames inspect as perfectly valid but silently fail to render once compiled into a Win32 resource — this bit the Rust head once already (commit `9f58508`).
+
+After replacing `assets/app.ico`, copy it into each language's project and rebuild:
+
+| Language | Copy to | Rebuild |
+|---|---|---|
+| C# | `src/NotificationAgent.Windows/app.ico` | `dotnet build src/NotificationAgent.Windows/NotificationAgent.Windows.csproj` — picked up automatically via `<ApplicationIcon>` |
+| Rust | `rust/notify-agent-windows/assets/app.ico` | `cargo build --release --target x86_64-pc-windows-gnu -p notify-agent-windows` — re-embedded via `icon.rc`/`build.rs` |
+| Go | `golang/cmd/notify-agent-windows/assets/app.ico` | Regenerate the exe resource, then `GOOS=windows GOARCH=amd64 go build ./cmd/notify-agent-windows`: <br>`go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest`<br>`goversioninfo -icon=assets/app.ico -o=resource_windows_amd64.syso versioninfo.json` (run from `golang/cmd/notify-agent-windows/`) |
+
+Each language's own README has the same instructions plus the mechanism-specific detail (`rust/README.md`, `golang/README.md`).
 
 ## Development
 

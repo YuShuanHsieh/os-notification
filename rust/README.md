@@ -36,7 +36,7 @@ cargo test
 ## Run the console head
 
 ```bash
-export NOTIFY_USER_ID=u_demo          # required unless NOTIFY_AAD_CLIENT_ID is set (see Identity below)
+export NOTIFY_USER_ID=u_demo          # always required for the console head (see Identity below)
 cargo run -p notify-agent-console
 ```
 
@@ -58,24 +58,54 @@ dotnet run --project ../tools/TestPublisher -- u_demo --scenario presence
 | `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | NATS server to connect to. Also accepts `ws://`/`wss://` (NATS WebSocket, e.g. behind a load balancer that doesn't pass through raw TCP) — the scheme is detected automatically. |
 | `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.{0}.desktop` | Subscribe subject; `{0}` is replaced with the user ID |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | Subject the agent publishes acks to |
-| `NOTIFY_USER_ID` | — | Required identity when not using OIDC sign-in (below) |
-| `NOTIFY_DEVICE_ID` | hostname-derived | Optional override for the device identifier in acks |
-| `NOTIFY_AAD_CLIENT_ID` | — | If set, switches identity to the OIDC device-code flow instead of `NOTIFY_USER_ID` |
-| `NOTIFY_AAD_TENANT_ID` | `organizations` | Entra tenant for the device-code flow |
+| `NOTIFY_USER_ID` | — | Always required identity for the **console head**; it has no AAD/device-code alternative (see Identity below). **Not used by the Windows head**, which no longer requires it — see Identity below and "App settings file (Windows)". |
+| `NOTIFY_DEVICE_ID` | hostname-derived | Optional override for the device identifier in acks. The Windows head also accepts the settings file's `deviceId` as an equivalent override (this env var wins when both are set). |
+| `NOTIFY_AAD_CLIENT_ID` | — | **Windows head only.** If set, switches identity to the OIDC device-code flow instead of the Windows-username default (see Identity below). |
+| `NOTIFY_AAD_TENANT_ID` | `organizations` | Entra tenant for the device-code flow (Windows head only) |
 | `NOTIFY_NATS_CREDS_FILE` | — | Path to a standard NATS `.creds` file (JWT + NKey seed). If set, both heads authenticate to NATS with it. |
 | `NOTIFY_NATS_AUTH_SERVICE_URL` | — | HTTPS endpoint of an external NATS auth service (Windows head only). If set, takes precedence over `NOTIFY_NATS_CREDS_FILE` and requires `NOTIFY_AAD_CLIENT_ID` + `NOTIFY_NATS_AUTH_SERVICE_SCOPE`. |
 | `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | — | AAD scope requested for the token used to call the external auth service. Required when `NOTIFY_NATS_AUTH_SERVICE_URL` is set. |
 
 ### Identity
 
-- **Env identity (default, used above):** set `NOTIFY_USER_ID`. Simplest path for local dev.
-- **Device-code OIDC sign-in:** set `NOTIFY_AAD_CLIENT_ID` (and optionally `NOTIFY_AAD_TENANT_ID`). On startup the agent prints a URL and a code — sign in with any browser, on any device — then resolves the signed-in user's Entra object ID as the identity. This is the Rust agent's replacement for the C# agent's Windows-broker (WAM) sign-in, since no WAM equivalent exists outside .NET.
+- **Env identity (console head, always required):** set `NOTIFY_USER_ID`. Simplest path for local dev. This is the *only* identity source for the console head; it has no AAD/device-code or username fallback, full stop.
+- **Device-code OIDC sign-in (Windows head only):** set `NOTIFY_AAD_CLIENT_ID` (and optionally `NOTIFY_AAD_TENANT_ID`). On startup the agent prints a URL and a code — sign in with any browser, on any device — then resolves the signed-in user's Entra object ID as the identity. This is the Rust agent's replacement for the C# agent's Windows-broker (WAM) sign-in, since no WAM equivalent exists outside .NET. The console head has no equivalent; it always uses `NOTIFY_USER_ID` above.
+- **Windows-username identity (Windows head default, when `NOTIFY_AAD_CLIENT_ID` is unset):** the Windows head derives an identity directly from the signed-in Windows account instead of requiring `NOTIFY_USER_ID` — see `notify-agent-windows/src/windows_identity.rs`. It calls the Win32 `GetUserNameW` function (`advapi32.dll`, via the `windows` crate's `Win32_System_WindowsProgramming` feature) rather than reading the `USERNAME` environment variable, strips any `DOMAIN\` prefix, lowercases the result, and builds `u_{username}` (matching the `u_{oid}` shape of the AAD path). Usernames containing `.`, `*`, or `>` are rejected rather than used, since those characters are unsafe to embed directly in the `notify.user.{0}.desktop` subject template (a NATS subject-separator and two wildcard tokens, respectively) — an unvalidated value could otherwise widen a per-user subscription into one that receives other users' events. This is a deliberate, narrowly scoped exception to this codebase's general rule that the OS account name is never used as application identity; see `../context/contracts-and-invariants.md`. The console head and the AAD/device-code path above are both unaffected.
 
 ### NATS authentication
 
 By default the agent connects to NATS unauthenticated, same as before. Set `NOTIFY_NATS_CREDS_FILE` to authenticate with a standard `.creds` file (works with both heads). On Windows, set `NOTIFY_NATS_AUTH_SERVICE_URL` + `NOTIFY_NATS_AUTH_SERVICE_SCOPE` (alongside `NOTIFY_AAD_CLIENT_ID`) to instead authenticate via an external HTTPS auth service that reuses the same AAD sign-in — the NATS JWT is refreshed automatically on every connect and reconnect.
 
 Run with `RUST_LOG=debug` to see each step of this flow as it happens: which auth mode was selected at startup, identity resolution, the NATS connect/connected transition, and — for the external-auth-service mode — the callback firing on each connect/reconnect attempt, the AAD token acquisition, and the JWT fetch, each as a separate `nats auth: ...` / `aad: ...` log line.
+
+## App settings file (Windows)
+
+The Windows head also reads an optional JSON settings file at `%LOCALAPPDATA%\DesktopNotificationAgent\settings.json` (`notify-agent-windows/src/settings.rs`) — the same per-user directory as the device-id file and image cache — so an operator can configure a deployed agent without setting environment variables. The console head is unaffected and keeps using environment variables only.
+
+All fields are optional; a missing file or malformed JSON logs a `tracing::warn!` and falls back to defaults rather than failing startup:
+
+```json
+{
+  "natsUrl": "nats://127.0.0.1:4222",
+  "subjectTemplate": "notify.user.{0}.desktop",
+  "ackSubject": "notify.ack.desktop",
+  "natsCredsFile": "",
+  "natsAuthServiceUrl": "",
+  "natsAuthServiceScope": "",
+  "aadClientId": "",
+  "aadTenantId": "organizations",
+  "deviceId": "",
+  "logLevel": "info"
+}
+```
+
+Precedence for every field is the same: **environment variable (if set and non-blank) > settings file value (if non-blank) > built-in default above.** For example, `NOTIFY_NATS_URL` overrides `natsUrl`, which overrides the `nats://127.0.0.1:4222` default. `logLevel` feeds the startup log filter the same way `RUST_LOG` does (see Logging below); every other field maps 1:1 to an environment variable in the table above.
+
+## Logging
+
+Both heads log via `tracing`, installed as `tracing_subscriber::fmt` with an `EnvFilter`. The Windows head resolves its filter from `RUST_LOG` if set, else the settings file's `logLevel`, else `"info"` (`settings::resolve_log_filter`); the console head uses `RUST_LOG`/`"info"` only, since it has no settings file. Beyond the auth/identity flow already covered above, `notify-agent-core` logs the pipeline's drop and failure paths at levels an operator can filter on: a dropped duplicate event (`debug`, dedup key included), a parse failure (`debug`, with the reason), an intake-queue-full drop (`warn`), an aggregation-bucket-overflow drop (`warn`), and a toast render/submission failure (`error` — this failure is intentionally swallowed per the "single bad event can't crash the agent" contract, so this log line is the only production visibility into it).
+
+The Windows head is built `#![windows_subsystem = "windows"]` (no console window), so when it runs as an actually deployed tray app — double-clicked, launched from the Startup folder, etc. — a stdout-only log sink goes nowhere. To keep it debuggable in that configuration, it also writes a daily-rolling log file (via `tracing-appender`) under `%LOCALAPPDATA%\DesktopNotificationAgent\logs\agent.log.<date>`, alongside (not instead of) the stdout layer that still helps when run from a terminal during development. If the log directory can't be created (e.g. `LOCALAPPDATA` unset), file logging is skipped with a warning and stdout logging still applies.
 
 ## Build the Windows head
 
@@ -97,7 +127,7 @@ The linked binary lands at `target/x86_64-pc-windows-gnu/release/notify-agent-wi
 - Click Close — the icon disappears immediately and the process exits (check Task Manager) within ~5 seconds.
 - Point `NOTIFY_NATS_URL` at an unreachable host, relaunch — the tray icon still appears, the tooltip flags the failure (hover to see "... (agent failed to start)"), and Close still terminates the process immediately (no `AgentHost` to wait on).
 
-**Changing the tray icon:** replace `notify-agent-windows/assets/app.ico` and rebuild — no other file needs to change. **Use classic BMP/DIB-encoded frames, not PNG-compressed ones**, when regenerating the `.ico` (e.g. Pillow: `img.save(..., format="ICO", sizes=[...], bitmap_format="bmp")` — its default is PNG). GNU `windres` (the resource compiler `mingw-w64` provides, used by `build.rs` via the `embed-resource` crate) has a long-documented history of mishandling PNG-format icon directory entries: the resource bytes can look completely fine under inspection (right sizes, right resource IDs, `RT_ICON`/`RT_GROUP_ICON` all present) while the icon still fails to render at runtime. This bit us once already — an all-PNG `.ico` produced a binary that inspected as correct but showed no tray icon on real Windows.
+**Changing the tray icon:** `notify-agent-windows/assets/app.ico` is a byte-identical copy of the repo-root canonical `../assets/app.ico` (the C# and Go heads each keep their own copy of the same source). Replace the repo-root file first, then re-copy it here (and to the other two heads) and rebuild — no other file needs to change. **Use classic BMP/DIB-encoded frames, not PNG-compressed ones**, when regenerating the `.ico` (e.g. Pillow: `img.save(..., format="ICO", sizes=[...], bitmap_format="bmp")` — its default is PNG). GNU `windres` (the resource compiler `mingw-w64` provides, used by `build.rs` via the `embed-resource` crate) has a long-documented history of mishandling PNG-format icon directory entries: the resource bytes can look completely fine under inspection (right sizes, right resource IDs, `RT_ICON`/`RT_GROUP_ICON` all present) while the icon still fails to render at runtime. This bit us once already — an all-PNG `.ico` produced a binary that inspected as correct but showed no tray icon on real Windows.
 
 ```bash
 ./scripts/build-windows-docker.sh
@@ -108,7 +138,7 @@ This builds a small image (`docker/windows-cross.Dockerfile`, Rust + `mingw-w64`
 ## Troubleshooting
 
 - **`cargo test` hangs or the integration test fails oddly:** confirm nothing else is bound to port 4222, and that the NATS container is actually running (`docker ps`).
-- **Console head exits immediately with an identity error:** you need either `NOTIFY_USER_ID` or `NOTIFY_AAD_CLIENT_ID` set.
+- **Console head exits immediately with an identity error:** it always requires `NOTIFY_USER_ID` set — the console head has no AAD/device-code alternative (`NOTIFY_AAD_CLIENT_ID` is Windows-head-only).
 - **Windows cross-compile fails at the link step:** re-check `mingw-w64` is installed and `x86_64-pc-windows-gnu` is added (`rustup target list --installed`).
 - **No image appears in a Windows toast:** the agent downloads images best-effort (3 MB / 3 s limits, `https://` only) and silently falls back to a text-only toast on any failure — check the agent's log output (`RUST_LOG=debug`) for the dropped-image reason.
 - **NATS auth isn't behaving as expected (wrong mode selected, connect hangs, external-auth-service calls not firing):** run with `RUST_LOG=debug` and look for the `nats auth: mode = ...` line logged once at startup, then `nats auth [creds-file]: ...` / `nats auth [external-service]: ...` / `aad: ...` lines for each subsequent step. A missing `nats: connected` line after `nats: connecting` means the connect attempt itself is stuck or failing — check the NATS server is reachable at the configured `NOTIFY_NATS_URL`.

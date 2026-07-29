@@ -13,7 +13,8 @@ A Go port of the desktop notification agent, wire-compatible with the C# agent i
 | `internal/graphemetext` | Unicode-safe truncation by extended grapheme cluster (so a multi-codepoint emoji is never split). |
 | `internal/httpsurl` | Shared HTTPS URL safety policy for image/action URLs before Windows toast rendering. |
 | `internal/telemetry` | Acknowledgement JSON payload (`observed_by_agent` / `submitted_to_windows`). |
-| `internal/identity` | Application identity resolution. Currently only `EnvIdentity` (environment variables) — no AAD/MSAL/device-code sign-in yet. |
+| `internal/identity` | Application identity resolution. `EnvIdentity` (environment variables) is the shared, cross-platform provider used by the console head — no AAD/MSAL/device-code sign-in here. The Windows head has its own `WindowsUsernameIdentity` provider (`cmd/notify-agent-windows/identity_windows.go`) instead; see "Identity" below. |
+| `internal/loglevel` | Parses `NOTIFY_LOG_LEVEL`/the settings file's `logLevel` string into a `log/slog.Level`, shared by both cmd heads. |
 | `internal/natsauth` | Pluggable NATS auth. Currently only `CredsFileAuth` (`.creds` file) — no external-auth-service provider yet. |
 | `internal/aggregator` | Priority routing, batching, and replaceable collapsing, keyed by `(aggregationKey, priority)`. |
 | `internal/toast` | Builds renderer-neutral toast content from one or more notifications. |
@@ -74,17 +75,45 @@ go run ./cmd/test-publisher -- u_demo --scenario presence
 | `NOTIFY_NATS_URL` | `nats://127.0.0.1:4222` | NATS server to connect to. |
 | `NOTIFY_SUBJECT_TEMPLATE` | `notify.user.%s.desktop` | Subscribe subject; `%s` is replaced with the user ID (Go's `fmt.Sprintf` placeholder, same default subject as the C#/Rust `{0}` template). |
 | `NOTIFY_ACK_SUBJECT` | `notify.ack.desktop` | Subject the agent publishes acks to. |
-| `NOTIFY_USER_ID` | — | Required: the only identity source in this port (see Identity below). |
-| `NOTIFY_DEVICE_ID` | `d-{lowercase hostname}` | Optional override for the device identifier in acks. |
-| `NOTIFY_NATS_CREDS_FILE` | — | Path to a standard NATS `.creds` file (JWT + NKey seed). If set, both heads authenticate to NATS with it. |
+| `NOTIFY_USER_ID` | — | **Console head only, required.** Not read by the Windows head at all (see Identity below). |
+| `NOTIFY_DEVICE_ID` | `d-{lowercase hostname}` | Optional override for the device identifier in acks. Both heads honor it; the Windows head also accepts the settings file's `deviceId` (env wins when both are set). |
+| `NOTIFY_NATS_CREDS_FILE` | — | Path to a standard NATS `.creds` file (JWT + NKey seed). If set, both heads authenticate to NATS with it. The Windows head also accepts the settings file's `natsCredsFile` (env wins when both are set). |
+| `NOTIFY_LOG_LEVEL` | `info` | Minimum `log/slog` level for both heads: `debug`, `info`, `warn`, or `error` (case-insensitive). The Windows head also accepts the settings file's `logLevel` (env wins when both are set); an unset/blank/unparseable value at either tier falls through to the next, defaulting to `info`. |
 
 ### Identity
 
-This port currently implements **environment identity only**: set `NOTIFY_USER_ID` (and optionally `NOTIFY_DEVICE_ID`). There is no AAD/MSAL sign-in (C#) and no device-code OIDC flow (Rust) here yet — `internal/identity.EnvIdentity` is the only `identity.Provider` implementation. `NOTIFY_AAD_CLIENT_ID` and `NOTIFY_AAD_TENANT_ID` are not read by this agent.
+**The console head** (`cmd/notify-agent-console`) implements environment identity only: set `NOTIFY_USER_ID` (and optionally `NOTIFY_DEVICE_ID`) — `internal/identity.EnvIdentity` is its only `identity.Provider`. There is no AAD/MSAL sign-in (C#) and no device-code OIDC flow (Rust) here. `NOTIFY_AAD_CLIENT_ID` and `NOTIFY_AAD_TENANT_ID` are not read by this agent.
+
+**The Windows head** (`cmd/notify-agent-windows`) no longer requires (or reads) `NOTIFY_USER_ID` at all: it derives a default identity from the current Windows account name instead, via `WindowsUsernameIdentity` (`cmd/notify-agent-windows/identity_windows.go`). This calls the Win32 `GetUserNameW` function (`advapi32.dll`, raw `syscall`/`NewLazySystemDLL` — the same pattern `aumid.go` already uses for `shell32.dll`), strips any `DOMAIN\` prefix, lowercases the remaining username, and builds the ID as `u_{username}` (matching the `u_{oid}` shape other identity sources in this product use). The result is validated against the same NATS-subject-safety rule `internal/host` enforces (rejecting `.`, `*`, `>`) before it's used.
+
+This is a **deliberate, documented, Windows-heads-only exception** to this product's general rule that the OS account name is never used as identity (see `internal/identity`'s package doc and `../context/contracts-and-invariants.md`) — the C#/Rust Windows heads take the same fallback only when AAD isn't configured; the Go Windows head takes it unconditionally, since it has no AAD/device-code identity path at all. The device ID still defaults to `d-{lowercase hostname}` (`identity.go`'s `defaultWindowsDeviceID`), overridable via `NOTIFY_DEVICE_ID` or the settings file's `deviceId`. This provider cannot be exercised outside a real Windows session; its pure username→`u_{...}` transformation and validation logic (`identity.go`'s `userIDFromWindowsUsername`) is covered by `identity_test.go` and runs on any platform.
 
 ### NATS authentication
 
 By default the agent connects to NATS unauthenticated. Set `NOTIFY_NATS_CREDS_FILE` to authenticate with a standard `.creds` file (`internal/natsauth.CredsFileAuth`, works with both heads). There is no external-auth-service provider in this port (the Windows-only AAD-reused-token flow that C#/Rust support) — `NOTIFY_NATS_AUTH_SERVICE_URL` and `NOTIFY_NATS_AUTH_SERVICE_SCOPE` are not read by this agent.
+
+## Settings file (Windows head only)
+
+The Windows head reads an optional JSON settings file at `%LOCALAPPDATA%\DesktopNotificationAgent\settings.json` (the same base directory the image cache uses) at startup, so an operator can configure a deployed agent without setting environment variables. All fields are optional:
+
+```json
+{
+  "natsUrl": "nats://127.0.0.1:4222",
+  "subjectTemplate": "notify.user.%s.desktop",
+  "ackSubject": "notify.ack.desktop",
+  "natsCredsFile": "",
+  "deviceId": "",
+  "logLevel": "info"
+}
+```
+
+This schema intentionally covers only what the Go Windows head actually acts on — it has no AAD/device-code identity and no external-auth-service NATS auth mode, so unlike C#'s broader settings file, there is no field for either here.
+
+**Precedence per field: environment variable (if set and non-blank) > settings file value (if present and non-blank) > built-in default.** This is implemented in `cmd/notify-agent-windows/settings.go` (`ResolveHostOptions`, `ResolveCredsFile`, `ResolveDeviceID`, `ResolveLogLevel`), which layers the parsed `Settings` under an already environment-resolved `host.Options` — `host.OptionsFromEnv` and `host.Options` themselves are untouched, since those are shared, cross-platform types. A missing file is normal (never created or required); a malformed file logs a warning and falls back to defaults, never a startup failure. The console head is unaffected — it has no settings file, environment variables only.
+
+## Logging
+
+Both heads use the standard library's `log/slog` (a text handler writing to stderr) as the logging convention across `internal/*` and both `cmd/` heads, covering identity resolution, NATS connect/subscribe, render failures, intake-queue-full and aggregation-bucket-overflow drops, and (Windows only) tray lifecycle events (icon shown, Close clicked, agent-start failure). Notification content itself (titles/messages/URLs) is never logged — only identifiers, counts, and error reasons. The minimum level is `NOTIFY_LOG_LEVEL` (both heads) or, on the Windows head, the settings file's `logLevel` (env wins when both are set); default `info`.
 
 ## Build the Windows head
 
@@ -96,6 +125,14 @@ GOOS=windows GOARCH=amd64 go build -o notify-agent-windows.exe ./cmd/notify-agen
 ```
 
 Copy the `.exe` to a Windows 10/11 machine and run it (same environment variables as the console head apply). It registers a per-user AppUserModelID (`cmd/notify-agent-windows/aumid.go`), enforces a single running instance per session via a `Local\NotifyAgentGolang` mutex, and runs as a system tray app (no console window) using `github.com/getlantern/systray`: the icon (`cmd/notify-agent-windows/assets/app.ico`) appears in the tray immediately on launch, before the agent finishes connecting to NATS, and right-clicking it shows the running version plus a Close item that shuts the agent down.
+
+The compiled `.exe` itself also carries this same icon as its Win32 resource (Explorer/taskbar, not just the tray). Go has no built-in equivalent of C#'s `<ApplicationIcon>` MSBuild property or Rust's `icon.rc`/`build.rs` build script, so this is done via a committed `cmd/notify-agent-windows/resource_windows_amd64.syso`, generated by the pure-Go [`goversioninfo`](https://github.com/josephspurrier/goversioninfo) tool (no `windres`/mingw/cross-toolchain needed, keeping the "no cross-toolchain needed" cross-compile story intact) from `cmd/notify-agent-windows/versioninfo.json`. Go's build system links any `.syso` file present in a package directory automatically — no `go generate` step is needed at build time. The `_windows_amd64` suffix matters: it's Go's standard OS/ARCH build-constraint filename convention, so this object is only linked into Windows/amd64 builds and is invisible to (and doesn't bloat or break) the native Linux build used for `go build ./...`/`go test ./...` here. Regenerate it after changing the icon:
+
+```bash
+cd golang/cmd/notify-agent-windows
+go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
+goversioninfo -icon=assets/app.ico -o=resource_windows_amd64.syso versioninfo.json
+```
 
 Toast rendering has no mature pure-Go WinRT projection to build on (unlike Rust's `windows` crate), so this head builds the same toast XML the OS expects (`internal/windowstoast`) and submits it by shelling out to `powershell.exe -NoProfile -NonInteractive -EncodedCommand ...`, which loads `Windows.UI.Notifications.ToastNotificationManager` via PowerShell's WindowsRuntime `ContentType` accelerator — the same mechanism the BurntToast PowerShell module uses for unpackaged-app toast notifications. This is a documented architecture choice, not a shortcut: it renders avatar images (downloaded and cached under `%LOCALAPPDATA%\DesktopNotificationAgent\image-cache`, best-effort — a bad/oversized/slow image falls back to text-only rather than failing the toast) the same way the C#/Rust heads do.
 
@@ -109,15 +146,15 @@ Toast rendering has no mature pure-Go WinRT projection to build on (unlike Rust'
 ## Troubleshooting
 
 - **`go test ./...` hangs or the integration test fails oddly:** confirm nothing else is bound to port 4222, and that the NATS container is actually running (`docker ps`).
-- **Console head exits immediately with an identity error:** you need `NOTIFY_USER_ID` set.
+- **Console head exits immediately with an identity error:** you need `NOTIFY_USER_ID` set. (The Windows head does not need or read this variable — see "Identity" above.)
 - **Windows cross-compile fails:** confirm your Go toolchain supports the target (`go tool dist list | grep windows`) — no additional linker or C toolchain should be needed for this module.
 - **No image appears in a Windows toast:** the agent downloads images best-effort and silently falls back to a text-only toast on any failure (bad scheme, oversize body, slow server, non-image content type); check `internal/imagecache` behavior if you need to debug further.
 - **Toast never appears / PowerShell errors:** confirm `powershell.exe` is on `PATH` and that Windows notifications are enabled for the current user session; `cmd/notify-agent-windows/renderer.go`'s PowerShell invocation surfaces `CombinedOutput()` in its returned error.
 
 ## Known gaps
 
-- No AAD/MSAL sign-in and no device-code identity flow — environment identity (`NOTIFY_USER_ID`) is the only supported identity source.
+- No AAD/MSAL sign-in and no device-code identity flow on either head. The console head's only identity source is environment identity (`NOTIFY_USER_ID`); the Windows head has no AAD fallback to select between — it always uses the Windows-username-derived identity described above, unconditionally rather than as an AAD fallback (unlike C#/Rust).
 - No external-auth-service NATS authentication — only `.creds`-file auth is implemented.
 - Windows toast rendering goes through a `powershell.exe`-invoked WinRT script rather than native bindings. This is an intentional architecture choice (no mature pure-Go WinRT projection exists), not a defect, but it does mean toast submission depends on `powershell.exe` being present and functional.
 - The tray icon uses `github.com/getlantern/systray` rather than raw Win32 `Shell_NotifyIconW` calls.
-- Same as the C# and Rust implementations: the Windows head's live/visual behavior (tray icon, toast rendering, Close lifecycle) has not been verified on a real Windows desktop from this environment — only cross-compilation has been confirmed.
+- Same as the C# and Rust implementations: the Windows head's live/visual behavior (tray icon, toast rendering, Close lifecycle, the settings file actually being read, the `GetUserNameW`-based identity resolution, and the compiled `.exe`'s Explorer/taskbar icon) has not been verified on a real Windows desktop from this environment — only cross-compilation has been confirmed, plus (for the icon) that the `.rsrc` PE section is present in the cross-compiled binary.

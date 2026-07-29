@@ -5,6 +5,7 @@
 package dedup
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 
@@ -52,6 +53,19 @@ func NewCache(capacity int, ttl time.Duration, clk clock.Clock) *Cache {
 // normally). Safe for concurrent use from multiple goroutines with
 // exactly-once "first seen" semantics per key even under a concurrent race.
 func (c *Cache) SeenOrAdd(key string) bool {
+	duplicate := c.seenOrAddLocked(key)
+	// Logged after the mutex is released, matching the aggregator's
+	// bucket-overflow-warning pattern: a possibly-slow log handler must not
+	// serialize this hot path behind the cache's lock.
+	if duplicate {
+		slog.Debug("dedup: dropped duplicate event", "dedupKey", key)
+	}
+	return duplicate
+}
+
+// seenOrAddLocked does the actual duplicate-check/insert work under c.mu,
+// with no logging inside the critical section (see SeenOrAdd).
+func (c *Cache) seenOrAddLocked(key string) bool {
 	now := c.clk.Now()
 
 	c.mu.Lock()

@@ -55,6 +55,10 @@ func (r *WindowsRenderer) Show(ctx context.Context, req toast.ToastRequest) (tim
 	xml := windowstoast.BuildToastXML(req, imagePath)
 
 	if err := showToastViaPowerShell(ctx, xml); err != nil {
+		// Not logged here: host.render (internal/host/host.go) already logs
+		// every renderer.Show failure at Error level -- logging it again
+		// here would double-report the exact same failure. The wrapped
+		// error is still returned so the caller has the full detail.
 		return time.Time{}, fmt.Errorf("windows renderer: %w", err)
 	}
 	return time.Now(), nil
@@ -100,13 +104,26 @@ func showToastViaPowerShell(ctx context.Context, xml string) error {
 	return nil
 }
 
-// defaultImageCacheDir resolves the production image cache directory,
-// %LOCALAPPDATA%\DesktopNotificationAgent\image-cache, falling back to the
-// OS temp directory if LOCALAPPDATA is somehow unset.
-func defaultImageCacheDir() string {
+// defaultAppDataDir resolves the production per-user application data
+// directory, %LOCALAPPDATA%\DesktopNotificationAgent, falling back to the
+// OS temp directory if LOCALAPPDATA is somehow unset. Both the image cache
+// and the Feature-2 settings file live under this same directory.
+func defaultAppDataDir() string {
 	base := os.Getenv("LOCALAPPDATA")
 	if strings.TrimSpace(base) == "" {
 		base = os.TempDir()
 	}
-	return filepath.Join(base, "DesktopNotificationAgent", "image-cache")
+	return filepath.Join(base, "DesktopNotificationAgent")
+}
+
+// defaultImageCacheDir resolves the production image cache directory,
+// %LOCALAPPDATA%\DesktopNotificationAgent\image-cache.
+func defaultImageCacheDir() string {
+	return filepath.Join(defaultAppDataDir(), "image-cache")
+}
+
+// defaultSettingsFilePath resolves the production settings-file path,
+// %LOCALAPPDATA%\DesktopNotificationAgent\settings.json (Feature 2).
+func defaultSettingsFilePath() string {
+	return filepath.Join(defaultAppDataDir(), "settings.json")
 }

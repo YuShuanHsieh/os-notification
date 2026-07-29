@@ -1,8 +1,19 @@
 #![windows_subsystem = "windows"]
 
+// Declared unconditionally (not under `#[cfg(windows)]`) so their pure logic
+// — settings-file parsing/precedence, username-to-user-id transformation and
+// validation — compiles and runs under `cargo test` on any platform,
+// including this Linux dev machine. Only the small pieces that actually need
+// a Windows API or a Windows-only env var (`LOCALAPPDATA`) are internally
+// gated; see each module's doc comment.
+mod settings;
+mod windows_identity;
+
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("notify-agent-windows only runs on Windows. Build with --target x86_64-pc-windows-gnu.");
+    eprintln!(
+        "notify-agent-windows only runs on Windows. Build with --target x86_64-pc-windows-gnu."
+    );
     std::process::exit(2);
 }
 
@@ -13,19 +24,23 @@ mod tray;
 mod win {
     use std::sync::Arc;
 
+    use crate::settings::{self, Settings};
+    use crate::windows_identity::WindowsUsernameIdentity;
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
-    use notify_agent_core::host::{AgentConfig, AgentHost};
-    use notify_agent_core::identity::{AadTokenProvider, DeviceCodeIdentity, EnvIdentity, IdentityProvider};
+    use notify_agent_core::host::AgentHost;
+    use notify_agent_core::identity::{AadTokenProvider, DeviceCodeIdentity, IdentityProvider};
     use notify_agent_core::nats_auth::{
-        CredsFileAuth, ExternalAuthServiceAuth, NatsAuthConfig, NatsAuthProvider, validate_auth_service_config,
+        validate_auth_service_config, CredsFileAuth, ExternalAuthServiceAuth, NatsAuthConfig,
+        NatsAuthProvider,
     };
     use notify_agent_core::toast::{ToastRenderer, ToastRequest};
-    use windows::core::{HSTRING, w};
+    use tracing_subscriber::prelude::*;
+    use windows::core::{w, HSTRING};
     use windows::Data::Xml::Dom::XmlDocument;
-    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 
     /// Unpackaged-app AppUserModelID; registered per-user in HKCU on first
     /// run (the WinAppSDK Register() substitute — design §6 of the Rust spec).
@@ -47,7 +62,9 @@ mod win {
             let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
                 .join("DesktopNotificationAgent")
                 .join("image-cache");
-            Ok(Self { cache: notify_agent_core::image_cache::ImageCache::new(dir) })
+            Ok(Self {
+                cache: notify_agent_core::image_cache::ImageCache::new(dir),
+            })
         }
     }
 
@@ -77,7 +94,16 @@ mod win {
 
     /// Stable per-install device id, SHARED with the C# head (same file), so
     /// acks correlate to one device regardless of which agent runs.
-    fn device_id() -> anyhow::Result<String> {
+    ///
+    /// Precedence matches every other setting: `NOTIFY_DEVICE_ID` env var (if
+    /// set and non-blank) > the settings file's `deviceId` (if non-blank) >
+    /// the id persisted below. An explicit override short-circuits the
+    /// persisted-file lookup entirely, so an operator pinning a device id via
+    /// either source doesn't also need to touch the device-id file by hand.
+    fn device_id(settings_device_id: Option<&str>) -> anyhow::Result<String> {
+        if let Some(v) = settings::resolved_opt("NOTIFY_DEVICE_ID", settings_device_id) {
+            return Ok(v);
+        }
         let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
             .join("DesktopNotificationAgent");
         std::fs::create_dir_all(&dir)?;
@@ -88,10 +114,40 @@ mod win {
                 return Ok(existing);
             }
         }
-        let id = format!("d-{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_nanos());
+        let id = format!(
+            "d-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        );
         std::fs::write(&path, &id)?;
         Ok(id)
+    }
+
+    /// Rolling daily file sink under
+    /// `%LOCALAPPDATA%\DesktopNotificationAgent\logs\`. `#![windows_subsystem
+    /// = "windows"]` means this binary never has a console allocated, and
+    /// `tracing_subscriber::fmt`'s default writer is stdout — which goes
+    /// nowhere once this runs as a real deployed tray app (double-clicked,
+    /// launched from the Startup folder, etc.), leaving no production
+    /// debuggability at all despite that being this whole feature's point.
+    /// Returns the non-blocking writer plus its worker guard (the caller
+    /// MUST keep the guard alive for the rest of the process's lifetime:
+    /// dropping it flushes and stops the background writer thread, silently
+    /// losing anything logged afterward) and the directory, for the one log
+    /// line announcing where to find it.
+    fn file_log_writer() -> anyhow::Result<(
+        tracing_appender::non_blocking::NonBlocking,
+        tracing_appender::non_blocking::WorkerGuard,
+        std::path::PathBuf,
+    )> {
+        let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA")?)
+            .join("DesktopNotificationAgent")
+            .join("logs");
+        std::fs::create_dir_all(&dir)?;
+        let appender = tracing_appender::rolling::daily(&dir, "agent.log");
+        let (writer, guard) = tracing_appender::non_blocking(appender);
+        Ok((writer, guard, dir))
     }
 
     /// Tray icon + Win32 message loop run on the calling (main) thread; the agent's async
@@ -110,18 +166,76 @@ mod win {
         }
         register_aumid()?;
 
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .init();
+        // Read the settings file before installing the log filter, since the
+        // filter itself can come from the file's `logLevel` (RUST_LOG still
+        // takes priority when set — see `settings::resolve_log_filter`).
+        // `settings::load()` returns any load-time diagnostics (malformed
+        // JSON, unreadable file, missing LOCALAPPDATA) as plain data instead
+        // of logging them directly: no `tracing` subscriber exists yet at
+        // this point, so a `tracing::warn!` call made here would be
+        // silently dropped. They're logged just below, once a subscriber is
+        // actually installed.
+        let (settings, settings_diagnostics) = settings::load();
+
+        // Stdout layer (helps when run from a terminal during development)
+        // plus a rolling file layer under
+        // `%LOCALAPPDATA%\DesktopNotificationAgent\logs\` (the only sink
+        // that actually exists in this app's real deployed configuration —
+        // see `file_log_writer`'s doc comment), both under one shared
+        // `EnvFilter`. `file_guard` is handed off to `tray::create` below
+        // rather than just bound to a local here: this fn's only real exit
+        // path is `tray.rs`'s Close handler calling `std::process::exit`,
+        // which runs no destructors, so a guard that only lived in a local
+        // that never goes out of scope would never flush the file sink's
+        // final lines. `file_log_error` is captured before the result is
+        // consumed so it can still be logged below, once a subscriber
+        // exists either way.
+        let filter = settings::resolve_log_filter(&settings);
+        let file_log_result = file_log_writer();
+        let file_log_error = file_log_result.as_ref().err().map(|e| e.to_string());
+        let (file_guard, log_dir) = match file_log_result {
+            Ok((writer, guard, dir)) => {
+                tracing_subscriber::registry()
+                    .with(filter)
+                    .with(tracing_subscriber::fmt::layer())
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_writer(writer)
+                            .with_ansi(false),
+                    )
+                    .init();
+                (Some(guard), Some(dir))
+            }
+            Err(_) => {
+                tracing_subscriber::registry()
+                    .with(filter)
+                    .with(tracing_subscriber::fmt::layer())
+                    .init();
+                (None, None)
+            }
+        };
+
+        for diagnostic in &settings_diagnostics {
+            tracing::warn!("{diagnostic}");
+        }
+        match (&log_dir, &file_log_error) {
+            (Some(dir), _) => tracing::debug!(dir = %dir.display(), "file logging enabled"),
+            (None, Some(error)) => tracing::warn!(
+                %error,
+                "file logging: could not set up rolling file log under \
+                 %LOCALAPPDATA%\\DesktopNotificationAgent\\logs, stdout only"
+            ),
+            (None, None) => unreachable!("file_log_writer always returns Ok or Err"),
+        }
 
         let (close_tx, close_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let tray = super::tray::create(close_tx, done_rx)?;
+        let tray = super::tray::create(close_tx, done_rx, file_guard)?;
 
         std::thread::spawn(move || {
             let result = tokio::runtime::Runtime::new()
                 .expect("failed to build tokio runtime")
-                .block_on(run_agent(close_rx, tray));
+                .block_on(run_agent(close_rx, tray, settings));
             if let Err(e) = result {
                 tracing::error!(error = %e, "agent failed to start or run");
                 tray.set_start_failed();
@@ -136,8 +250,12 @@ mod win {
     /// Starts the agent, then waits for either Ctrl+C or the tray's Close click before shutting
     /// down. On startup failure, flags the tray tooltip and returns — the tray/Close item stay
     /// usable with no `AgentHost` to dispose (matches the C# design's failure path).
-    async fn run_agent(mut close_rx: tokio::sync::mpsc::UnboundedReceiver<()>, tray: super::tray::TrayHandle) -> anyhow::Result<()> {
-        let host = match start_host().await {
+    async fn run_agent(
+        mut close_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+        tray: super::tray::TrayHandle,
+        settings: Settings,
+    ) -> anyhow::Result<()> {
+        let host = match start_host(&settings).await {
             Ok(host) => host,
             Err(e) => {
                 tray.set_start_failed();
@@ -152,15 +270,32 @@ mod win {
         host.shutdown().await
     }
 
-    async fn start_host() -> anyhow::Result<AgentHost> {
-        let config = AgentConfig::from_env();
+    async fn start_host(settings: &Settings) -> anyhow::Result<AgentHost> {
+        // Every std::env::var(...) here has moved to settings::resolved_str/opt, which
+        // layers the settings file underneath: env var (if set, non-blank) > settings
+        // file value (if non-blank) > built-in default (feature: app settings file).
+        let config = settings::agent_config(settings);
         let renderer: Arc<dyn ToastRenderer> = Arc::new(WindowsToastRenderer::new()?);
 
-        let client_id = std::env::var("NOTIFY_AAD_CLIENT_ID").ok().filter(|s| !s.trim().is_empty());
-        let tenant = std::env::var("NOTIFY_AAD_TENANT_ID").unwrap_or_else(|_| "organizations".into());
-        let auth_service_url = std::env::var("NOTIFY_NATS_AUTH_SERVICE_URL").ok().filter(|s| !s.trim().is_empty());
-        let auth_service_scope = std::env::var("NOTIFY_NATS_AUTH_SERVICE_SCOPE").ok().filter(|s| !s.trim().is_empty());
-        let creds_file = std::env::var("NOTIFY_NATS_CREDS_FILE").ok().filter(|s| !s.trim().is_empty());
+        let client_id =
+            settings::resolved_opt("NOTIFY_AAD_CLIENT_ID", settings.aad_client_id.as_deref());
+        let tenant = settings::resolved_str(
+            "NOTIFY_AAD_TENANT_ID",
+            settings.aad_tenant_id.as_deref(),
+            "organizations",
+        );
+        let auth_service_url = settings::resolved_opt(
+            "NOTIFY_NATS_AUTH_SERVICE_URL",
+            settings.nats_auth_service_url.as_deref(),
+        );
+        let auth_service_scope = settings::resolved_opt(
+            "NOTIFY_NATS_AUTH_SERVICE_SCOPE",
+            settings.nats_auth_service_scope.as_deref(),
+        );
+        let creds_file = settings::resolved_opt(
+            "NOTIFY_NATS_CREDS_FILE",
+            settings.nats_creds_file.as_deref(),
+        );
 
         validate_auth_service_config(&NatsAuthConfig {
             auth_service_url: auth_service_url.clone(),
@@ -175,7 +310,8 @@ mod win {
             "nats auth: startup config resolved"
         );
 
-        let refresh_token: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
+        let refresh_token: Arc<tokio::sync::Mutex<Option<String>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
         let extra_scopes = match &auth_service_scope {
             Some(scope) if auth_service_url.is_some() => vec![scope.clone()],
             _ => Vec::new(),
@@ -187,15 +323,35 @@ mod win {
                 Arc::new(DeviceCodeIdentity {
                     client_id: client_id.clone(),
                     tenant: tenant.clone(),
-                    device_id: device_id()?,
+                    device_id: device_id(settings.device_id.as_deref())?,
                     renderer: renderer.clone(),
                     extra_scopes,
                     refresh_token_sink: Some(refresh_token.clone()),
                 })
             }
             None => {
-                tracing::debug!("identity: mode = env (NOTIFY_USER_ID)");
-                Arc::new(EnvIdentity)
+                // Windows-heads-only default (feature: derive identity from the OS
+                // username) — a deliberate, documented exception to "the OS account
+                // name is never used as identity"; see
+                // context/contracts-and-invariants.md and windows_identity.rs. The
+                // console head's EnvIdentity (NOTIFY_USER_ID) is unaffected.
+                tracing::debug!("identity: mode = windows-username (no NOTIFY_AAD_CLIENT_ID)");
+                // A deployment carried over from before this head derived identity
+                // from the Windows username may still have NOTIFY_USER_ID set (it's
+                // what the console head's EnvIdentity reads) — that's now silently
+                // ignored here, which deserves a visible signal rather than letting
+                // the operator assume it still takes effect.
+                if let Ok(v) = std::env::var("NOTIFY_USER_ID") {
+                    if !v.trim().is_empty() {
+                        tracing::warn!(
+                            "NOTIFY_USER_ID is set but ignored by the Windows head: identity is \
+                             derived from the Windows username instead (see windows_identity.rs)"
+                        );
+                    }
+                }
+                Arc::new(WindowsUsernameIdentity {
+                    device_id: device_id(settings.device_id.as_deref())?,
+                })
             }
         };
 

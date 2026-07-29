@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -524,6 +525,30 @@ func TestHostDelegatesDropCountersToPipelineAndAggregator(t *testing.T) {
 	}
 	if got := h.DroppedBucketOverflow(); got != 1 {
 		t.Errorf("Host.DroppedBucketOverflow() = %d, want 1", got)
+	}
+}
+
+func TestRedactedURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"no userinfo returned unchanged", "nats://127.0.0.1:4222", "nats://127.0.0.1:4222"},
+		{"username and password both masked", "nats://user:password@host:4222", "nats://%2A%2A%2A:xxxxx@host:4222"},
+		{"bare token username masked", "nats://s3cr3t-token@host:4222", "nats://%2A%2A%2A:xxxxx@host:4222"},
+		{"unparseable input returned unchanged", "not a url with spaces", "not a url with spaces"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redactedURL(tt.raw)
+			if got != tt.want {
+				t.Fatalf("redactedURL(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+			if strings.Contains(got, "password") || strings.Contains(got, "s3cr3t-token") {
+				t.Fatalf("redactedURL(%q) = %q, leaked the raw credential", tt.raw, got)
+			}
+		})
 	}
 }
 
