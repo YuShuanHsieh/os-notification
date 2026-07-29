@@ -26,6 +26,9 @@ internal static partial class Log
     [LoggerMessage(EventId = 5, Level = LogLevel.Information, Message = "Identity resolved from Windows username (userId={UserId}, deviceId={DeviceId}).")]
     public static partial void IdentityResolvedWindowsUsername(this ILogger logger, string userId, string deviceId);
 
+    /// <summary><paramref name="authServiceUrl"/> must already be redacted (see
+    /// <see cref="NatsUrlRedactor"/>) — this URL can carry credentials as userinfo (e.g.
+    /// <c>https://user:pass@host/...</c>) and must never reach this log verbatim.</summary>
     [LoggerMessage(EventId = 6, Level = LogLevel.Debug, Message = "NATS auth: mode = external-auth-service ({AuthServiceUrl}).")]
     public static partial void NatsAuthModeExternalService(this ILogger logger, string authServiceUrl);
 

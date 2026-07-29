@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NotificationAgent.Core.Nats;
 using NotificationAgent.Windows;
 using Xunit;
@@ -94,5 +95,43 @@ public class NatsAuthSelectionTests
             Http));
 
         Assert.Contains("https", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Select_redacts_credentials_from_the_auth_service_url_before_logging()
+    {
+        var msal = new MsalIdentityProvider("client-id", "tenant-id");
+        var logger = new RecordingLogger();
+
+        NatsAuthSelection.Select(
+            authServiceUrl: "https://user:secret@auth.example.com",
+            authServiceScope: "api://x/Nats.Connect",
+            credsFile: null,
+            msalIdentity: msal,
+            Http,
+            logger);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.DoesNotContain("secret", entry.Message);
+        Assert.DoesNotContain("user:", entry.Message);
+        Assert.Contains("auth.example.com", entry.Message);
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 }
