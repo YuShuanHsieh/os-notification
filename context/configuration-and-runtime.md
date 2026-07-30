@@ -108,15 +108,18 @@ heads are unaffected.
 ## Rust Windows metrics (OpenTelemetry)
 
 The Rust Windows head can optionally export three OpenTelemetry metrics over
-OTLP/HTTP (`rust/notify-agent-windows/src/otel_metrics.rs`): a
-`notify_agent_events_received_total` counter (once per valid, first-seen
+OTLP/HTTP (`rust/notify-agent-windows/src/otel_metrics.rs`): an
+`agent.events.received` counter (once per valid, first-seen
 event accepted into the pipeline — the same point the `observed_by_agent`
-ack is published), a `notify_agent_events_dropped_total` counter tagged with
-a `reason` attribute (`"queue_full"` or `"bucket_overflow"`), and a
-`notify_agent_render_duration_seconds` histogram (once per source event
+ack is published), an `agent.events.dropped` counter tagged with
+a `reason` attribute (`"queue_full"` or `"bucket_overflow"`), and an
+`agent.render.duration` histogram in seconds (once per source event
 represented in a rendered toast, using that event's own
 `agent_received_at`/`toast_submitted_at` — a batched toast covering 3 events
-records 3 observations, not 1). It is disabled by default;
+records 3 observations, not 1). These names are dot-namespaced (OTel
+semantic-convention style, not a pre-suffixed Prometheus name like
+`..._total`/`..._seconds` — a bridge appends those itself) and identical
+across all three language implementations of this agent. It is disabled by default;
 `otelEnabled`/`NOTIFY_OTEL_ENABLED` (only `true`/`1` overrides — see "Rust
 Windows settings file" above) and a non-blank
 `otelExporterEndpoint`/`NOTIFY_OTEL_EXPORTER_ENDPOINT` together turn it on;

@@ -33,14 +33,23 @@ public sealed class OpenTelemetryAgentMetrics : IAgentMetrics, IDisposable
     {
         _meter = meter;
         _meterProvider = meterProvider;
+
+        // Dot-namespaced, no type/unit suffix baked into the name -- matches OTel semantic-convention
+        // guidance (e.g. "http.server.request.duration") and this product's Go implementation.
+        // A Prometheus-style "_total"/"_seconds" suffix belongs to the *exposition format*, not the
+        // instrument name: an OTel-to-Prometheus bridge already appends it, so baking it in here risks
+        // a doubled suffix (e.g. "..._total_total") once bridged. Keep these three names identical
+        // across all three language implementations of this agent.
         _eventsReceived = _meter.CreateCounter<long>(
-            "notify_agent_events_received_total",
+            "agent.events.received",
+            unit: "1",
             description: "Count of valid, first-seen events accepted into the pipeline.");
         _eventsDropped = _meter.CreateCounter<long>(
-            "notify_agent_events_dropped_total",
+            "agent.events.dropped",
+            unit: "1",
             description: "Count of events dropped, tagged by reason (queue_full, bucket_overflow).");
         _renderDuration = _meter.CreateHistogram<double>(
-            "notify_agent_render_duration_seconds",
+            "agent.render.duration",
             unit: "s",
             description: "End-to-end agent processing latency per event, from receipt to toast submission.");
     }

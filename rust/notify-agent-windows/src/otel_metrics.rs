@@ -123,15 +123,23 @@ fn build(resolved: &crate::settings::ResolvedOtelSettings) -> anyhow::Result<Ote
     opentelemetry::global::set_meter_provider(provider.clone());
 
     let meter = opentelemetry::global::meter("notify-agent-windows");
+    // Dot-namespaced, no type/unit suffix baked into the name -- matches OTel semantic-convention
+    // guidance (e.g. "http.server.request.duration") and this product's Go implementation. A
+    // Prometheus-style "_total"/"_seconds" suffix belongs to the *exposition format*, not the
+    // instrument name: an OTel-to-Prometheus bridge already appends it, so baking it in here risks
+    // a doubled suffix (e.g. "..._total_total") once bridged. Keep these three names identical
+    // across all three language implementations of this agent.
     Ok(OtelAgentMetrics {
         events_received: meter
-            .u64_counter("notify_agent_events_received_total")
+            .u64_counter("agent.events.received")
+            .with_unit("1")
             .build(),
         events_dropped: meter
-            .u64_counter("notify_agent_events_dropped_total")
+            .u64_counter("agent.events.dropped")
+            .with_unit("1")
             .build(),
         render_duration: meter
-            .f64_histogram("notify_agent_render_duration_seconds")
+            .f64_histogram("agent.render.duration")
             .with_unit("s")
             .build(),
     })
