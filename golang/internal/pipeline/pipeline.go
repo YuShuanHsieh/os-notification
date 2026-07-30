@@ -43,6 +43,17 @@ type Options struct {
 // synchronization.
 type OnObserved func(event *model.InboundNotification)
 
+// OnDropped is invoked once each time TryEnqueue drops a payload because the
+// intake queue is full, from whatever goroutine called TryEnqueue (in
+// production, the NATS message-dispatch goroutine). May be nil, in which
+// case a drop is still counted by DroppedQueueFull but nothing else is
+// notified. This package stays decoupled from what a caller does with a
+// drop (e.g. record a metric) -- see internal/host, which wires this to its
+// own metrics recorder -- the same "pipeline doesn't know about
+// aggregator/telemetry, host wires them together" decoupling documented
+// above for OnObserved.
+type OnDropped func()
+
 // queueItem pairs a raw payload with the timestamp it was accepted at --
 // captured in TryEnqueue, at the moment the raw payload is accepted from
 // NATS, so that it reflects true receipt time rather than whenever a worker
@@ -71,6 +82,7 @@ type Pipeline struct {
 	dedupCache *dedup.Cache
 	onObserved OnObserved
 	clk        clock.Clock
+	onDropped  OnDropped
 
 	droppedQueueFull atomic.Uint64
 
@@ -80,14 +92,16 @@ type Pipeline struct {
 
 // New constructs a Pipeline. dedupCache suppresses duplicates by
 // deduplicationKey before OnObserved fires. clk is the time source used to
-// stamp each payload's AgentReceivedAt at TryEnqueue time.
-func New(opts Options, dedupCache *dedup.Cache, onObserved OnObserved, clk clock.Clock) *Pipeline {
+// stamp each payload's AgentReceivedAt at TryEnqueue time. onDropped (may be
+// nil) is invoked once per queue-full drop -- see OnDropped's doc comment.
+func New(opts Options, dedupCache *dedup.Cache, onObserved OnObserved, clk clock.Clock, onDropped OnDropped) *Pipeline {
 	return &Pipeline{
 		opts:       opts,
 		queue:      make(chan queueItem, opts.QueueCapacity),
 		dedupCache: dedupCache,
 		onObserved: onObserved,
 		clk:        clk,
+		onDropped:  onDropped,
 	}
 }
 
@@ -108,8 +122,26 @@ func (p *Pipeline) TryEnqueue(payload []byte) bool {
 	default:
 		total := p.droppedQueueFull.Add(1)
 		p.warnQueueFull(total)
+		p.callOnDropped()
 		return false
 	}
+}
+
+// callOnDropped invokes the optional OnDropped callback, if set, with a
+// recover() guard -- a panic inside it (in production, this is always a
+// metrics-recording call wired up by internal/host) must never propagate
+// into TryEnqueue's caller, matching the panic-containment already applied
+// to onObserved in process, below.
+func (p *Pipeline) callOnDropped() {
+	if p.onDropped == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("pipeline: recovered from panic in onDropped callback", "panic", r)
+		}
+	}()
+	p.onDropped()
 }
 
 // warnQueueFull logs the queue-full warning at most once per

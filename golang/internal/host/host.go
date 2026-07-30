@@ -24,6 +24,7 @@ import (
 	"github.com/YuShuanHsieh/os-notification/golang/internal/clock"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/dedup"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/identity"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/metrics"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/natsauth"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/pipeline"
@@ -170,6 +171,7 @@ type Host struct {
 	agg      *aggregator.Aggregator
 	renderer toast.Renderer
 	clk      clock.Clock
+	metrics  metrics.AgentMetrics
 
 	ackSubject string
 	subject    string
@@ -179,16 +181,39 @@ type Host struct {
 	wg     sync.WaitGroup
 }
 
+// safeRecord invokes f (always a single call into the injected
+// metrics.AgentMetrics) with a recover() guard, as an explicit extra safety
+// net on top of whatever panic-safety the AgentMetrics implementation
+// itself provides: a metrics-recording failure must never be allowed to
+// interrupt event processing, dedup, aggregation, or acknowledgement
+// publishing (a user-mandated, unusual requirement -- hence the belt AND
+// suspenders here). Mirrors the exact defer/recover pattern already used in
+// pipeline.process/aggregator.safeRender for panic containment.
+func safeRecord(f func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("metrics: recovered from panic while recording", "panic", r)
+		}
+	}()
+	f()
+}
+
 // Start resolves identity, connects to NATS (applying authProvider's options
 // if non-nil), wires dedup+pipeline+aggregator+renderer+ack-publishing, and
 // subscribes to the per-user subject, starting the pipeline's worker pool in
 // the background. On any failure, no goroutines are left running and no NATS
-// connection is left open.
-func Start(ctx context.Context, opts Options, idp identity.Provider, renderer toast.Renderer, authProvider natsauth.Provider) (*Host, error) {
-	return start(ctx, opts, idp, renderer, authProvider, defaultDeps())
+// connection is left open. agentMetrics may be nil, in which case it
+// defaults to metrics.NullAgentMetrics{} -- matching the "console head never
+// configures metrics, Windows head supplies a real OpenTelemetry-backed one"
+// design (see internal/metrics's package doc).
+func Start(ctx context.Context, opts Options, idp identity.Provider, renderer toast.Renderer, authProvider natsauth.Provider, agentMetrics metrics.AgentMetrics) (*Host, error) {
+	return start(ctx, opts, idp, renderer, authProvider, agentMetrics, defaultDeps())
 }
 
-func start(ctx context.Context, opts Options, idp identity.Provider, renderer toast.Renderer, authProvider natsauth.Provider, d deps) (*Host, error) {
+func start(ctx context.Context, opts Options, idp identity.Provider, renderer toast.Renderer, authProvider natsauth.Provider, agentMetrics metrics.AgentMetrics, d deps) (*Host, error) {
+	if agentMetrics == nil {
+		agentMetrics = metrics.NullAgentMetrics{}
+	}
 	ident, err := idp.Resolve(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: resolve identity: %w", err)
@@ -220,14 +245,19 @@ func start(ctx context.Context, opts Options, idp identity.Provider, renderer to
 		nc:         nc,
 		renderer:   renderer,
 		clk:        d.clk,
+		metrics:    agentMetrics,
 		ackSubject: opts.AckSubject,
 		deviceID:   ident.DeviceID,
 		subject:    fmt.Sprintf(opts.SubjectTemplate, ident.UserID),
 	}
 
 	dedupCache := dedup.NewCache(d.dedupCapacity, d.dedupTTL, d.clk)
-	h.agg = aggregator.New(d.aggregatorOptions, d.clk, h.render)
-	h.pipeline = pipeline.New(d.pipelineOptions, dedupCache, h.onObserved, d.clk)
+	h.agg = aggregator.New(d.aggregatorOptions, d.clk, h.render, func() {
+		safeRecord(func() { h.metrics.RecordEventDropped("bucket_overflow") })
+	})
+	h.pipeline = pipeline.New(d.pipelineOptions, dedupCache, h.onObserved, d.clk, func() {
+		safeRecord(func() { h.metrics.RecordEventDropped("queue_full") })
+	})
 
 	sub, err := nc.Subscribe(h.subject, func(msg *nats.Msg) {
 		h.pipeline.TryEnqueue(msg.Data)
@@ -272,8 +302,9 @@ func (h *Host) DroppedBucketOverflow() uint64 {
 
 // onObserved is the pipeline's OnObserved callback: fires once per valid,
 // first-seen event. It publishes observed_by_agent using the event's own
-// AgentReceivedAt (stamped by the pipeline at intake), then forwards the
-// event into the aggregator.
+// AgentReceivedAt (stamped by the pipeline at intake), records the
+// RecordEventReceived metric (safeRecord-guarded, so a metrics failure can
+// never interrupt this path), then forwards the event into the aggregator.
 func (h *Host) onObserved(event *model.InboundNotification) {
 	h.publishAck(telemetry.Ack{
 		EventID:         event.EventID,
@@ -281,6 +312,7 @@ func (h *Host) onObserved(event *model.InboundNotification) {
 		AgentReceivedAt: event.AgentReceivedAt,
 		Status:          telemetry.StatusObservedByAgent,
 	})
+	safeRecord(func() { h.metrics.RecordEventReceived() })
 	h.agg.Add(event)
 }
 
@@ -289,9 +321,12 @@ func (h *Host) onObserved(event *model.InboundNotification) {
 // elapses). It renders the batch as one toast and, only on success,
 // acknowledges submitted_to_windows for every event the batch represents --
 // each read straight off its own AgentReceivedAt (no side-tracking needed:
-// the event carries it) paired with a shared toastSubmittedAt. A rendering
-// failure acknowledges nothing and is otherwise swallowed: a single bad
-// event/render must not crash the host (context/architecture.md).
+// the event carries it) paired with a shared toastSubmittedAt, and records
+// that event's own RecordRenderDuration (toastSubmittedAt minus its own
+// AgentReceivedAt) -- once per source event in the batch, not once per
+// toast. A rendering failure acknowledges nothing (and records no duration)
+// and is otherwise swallowed: a single bad event/render must not crash the
+// host (context/architecture.md).
 func (h *Host) render(batch []*model.InboundNotification) {
 	req := toast.FromBatch(batch)
 
@@ -320,6 +355,8 @@ func (h *Host) render(batch []*model.InboundNotification) {
 			ToastSubmittedAt: &ts,
 			Status:           telemetry.StatusSubmittedToWindows,
 		})
+		seconds := ts.Sub(event.AgentReceivedAt).Seconds()
+		safeRecord(func() { h.metrics.RecordRenderDuration(seconds) })
 	}
 }
 

@@ -31,6 +31,15 @@ type Options struct {
 // one toast. len(batch) >= 1 always.
 type RenderFunc func(batch []*model.InboundNotification)
 
+// OnDropped is invoked once each time Add drops an event because creating a
+// new bucket for it would have exceeded MaxBuckets, from whatever goroutine
+// called Add. May be nil, in which case a drop is still counted by
+// DroppedBucketOverflow but nothing else is notified. This package stays
+// decoupled from what a caller does with a drop (e.g. record a metric) --
+// see internal/host, which wires this to its own metrics recorder, matching
+// the same decoupling internal/pipeline's OnDropped documents.
+type OnDropped func()
+
 // bucketKey groups events for batching. Two events only ever share a bucket
 // (and thus a render call) when both their aggregation key and their
 // priority match.
@@ -58,11 +67,12 @@ const bucketOverflowWarnInterval = 10 * time.Second
 // event (see context/contracts-and-invariants.md: "bounded resources, drop
 // under overload") rather than growing unboundedly or blocking.
 type Aggregator struct {
-	mu      sync.Mutex
-	opts    Options
-	clk     clock.Clock
-	render  RenderFunc
-	buckets map[bucketKey]*bucket
+	mu        sync.Mutex
+	opts      Options
+	clk       clock.Clock
+	render    RenderFunc
+	onDropped OnDropped
+	buckets   map[bucketKey]*bucket
 
 	// droppedBucketOverflow counts events dropped because adding them would
 	// have required creating a bucket beyond MaxBuckets. Exposed via
@@ -88,8 +98,9 @@ func (a *Aggregator) DroppedBucketOverflow() uint64 {
 // goroutine triggers it (either the caller's goroutine for a `critical`
 // event, or the clock's AfterFunc callback goroutine when a batch window
 // fires) — callers needing their own concurrency must handle that inside
-// render itself.
-func New(opts Options, clk clock.Clock, render RenderFunc) *Aggregator {
+// render itself. onDropped (may be nil) is invoked once per bucket-overflow
+// drop -- see OnDropped's doc comment.
+func New(opts Options, clk clock.Clock, render RenderFunc, onDropped OnDropped) *Aggregator {
 	if opts.MaxBuckets <= 0 {
 		opts.MaxBuckets = 100
 	}
@@ -100,10 +111,11 @@ func New(opts Options, clk clock.Clock, render RenderFunc) *Aggregator {
 		opts.NormalWindow = 10 * time.Second
 	}
 	return &Aggregator{
-		opts:    opts,
-		clk:     clk,
-		render:  render,
-		buckets: make(map[bucketKey]*bucket),
+		opts:      opts,
+		clk:       clk,
+		render:    render,
+		onDropped: onDropped,
+		buckets:   make(map[bucketKey]*bucket),
 	}
 }
 
@@ -150,6 +162,7 @@ func (a *Aggregator) Add(event *model.InboundNotification) {
 			if shouldLog {
 				slog.Warn("aggregator: dropped event, bucket overflow", "aggregationKey", key.aggregationKey, "priority", key.priority, "maxBuckets", maxBuckets, "totalDropped", total)
 			}
+			a.callOnDropped()
 			return
 		}
 		window := a.opts.NormalWindow
@@ -205,6 +218,23 @@ func (a *Aggregator) Flush() {
 			a.safeRender(b.events)
 		}
 	}
+}
+
+// callOnDropped invokes the optional OnDropped callback, if set, with a
+// recover() guard -- a panic inside it (in production, this is always a
+// metrics-recording call wired up by internal/host) must never propagate
+// into Add's caller, matching the panic-containment safeRender already
+// applies to render, below.
+func (a *Aggregator) callOnDropped() {
+	if a.onDropped == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("aggregator: recovered from panic in onDropped callback", "panic", r)
+		}
+	}()
+	a.onDropped()
 }
 
 // safeRender invokes the injected RenderFunc with a recover() guard, so a
