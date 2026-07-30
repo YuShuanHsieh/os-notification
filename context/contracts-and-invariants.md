@@ -28,10 +28,15 @@ this file together.
   requiring `NOTIFY_USER_ID`, via
   `NotificationAgent.Windows.WindowsUsernameIdentityProvider` in C# and
   `rust/notify-agent-windows/src/windows_identity.rs`'s `WindowsUsernameIdentity` in
-  Rust. The username is normalized (domain prefix stripped, lowercased, trimmed)
-  then **sanitized**, not rejected: every character outside `[a-z0-9_-]` (including
-  wildcard/delimiter characters like `.`, `*`, `>`, and whitespace — Windows account
-  names may legitimately contain spaces) is replaced with `_`, since an unsanitized
+  Rust. The username is resolved via the SAM-compatible, domain-qualified name
+  format (`DOMAIN\username`, or `MACHINENAME\username` when the machine isn't
+  domain-joined) rather than a bare, unqualified username, so that two
+  identically-named accounts in different domains resolve to different
+  identities; it is then normalized (lowercased, trimmed) then **sanitized**,
+  not rejected: every character outside `[a-z0-9_-]` (including
+  wildcard/delimiter characters like `.`, `*`, `>`, whitespace — Windows account
+  names may legitimately contain spaces — and the `\` domain/username
+  separator itself) is replaced with `_`, since an unsanitized
   value could otherwise turn a per-user subscription into an accidental wildcard
   subscription, or (for a value containing whitespace) get silently misrouted by
   NATS's whitespace-tokenized `SUB` wire format. Because that sanitization alone is

@@ -146,12 +146,16 @@ selection between them at startup.
 - With an AAD client ID, `MsalIdentityProvider` tries silent WAM acquisition and
   falls back to interactive acquisition when UI is required. Without one,
   `WindowsUsernameIdentityProvider` derives a default identity from the Windows
-  username: normalized (domain-stripped, lowercased, trimmed), sanitized to
-  `[a-z0-9_-]` (every other character, including `.`/`*`/`>`/whitespace, becomes
-  `_`), then suffixed with an 8-hex-character `SHA-256` digest of the
-  pre-sanitization normalized username so that two usernames sanitizing to the
-  same string (e.g. `"user.name"` and `"user_name"`) still resolve to different
-  identities — `u_{sanitized}_{hash8}`.
+  username, resolved via the SAM-compatible, domain-qualified name format
+  (`DOMAIN\username`, or `MACHINENAME\username` when not domain-joined) so
+  that two identically-named accounts in different domains resolve to
+  different identities: normalized (lowercased, trimmed), sanitized to
+  `[a-z0-9_-]` (every other character, including `.`/`*`/`>`/whitespace/the
+  `\` separator, becomes `_`), then suffixed with an 8-hex-character
+  `SHA-256` digest of the pre-sanitization normalized username so that two
+  usernames sanitizing to the same string (e.g. `"user.name"` and
+  `"user_name"`) still resolve to different identities —
+  `u_{sanitized}_{hash8}`.
 - The device ID file is created beneath
   `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`, unless overridden by
   `NOTIFY_DEVICE_ID`/the settings file's `deviceId`.
@@ -180,10 +184,13 @@ selection between them at startup.
 - With an AAD client id, `DeviceCodeIdentity` runs the OIDC device-code sign-in
   flow (see "Identity" in `rust/README.md`). Without one,
   `rust/notify-agent-windows/src/windows_identity.rs`'s `WindowsUsernameIdentity`
-  derives a default identity from the Windows username via the Win32
-  `GetUserNameW` function (`advapi32.dll`, called directly through the `windows`
-  crate's `Win32_System_WindowsProgramming` feature), lowercases it, strips any
-  `DOMAIN\` prefix, and rejects `.`, `*`, or `>` before it reaches subject
+  derives a default identity from the Windows username, resolved via the
+  SAM-compatible, domain-qualified name format (`DOMAIN\username`, or
+  `MACHINENAME\username` when not domain-joined) so that two identically-named
+  accounts in different domains resolve to different identities, lowercases
+  it, and sanitizes it (replacing `.`, `*`, `>`, whitespace, the `\` separator,
+  and any other character outside `[a-z0-9_-]` with `_`, then appending a hash
+  suffix of the pre-sanitization value) before it reaches subject
   construction — the same validated-username identity exception as the C#/Go
   Windows heads; see `contracts-and-invariants.md`.
 - `rust/notify-agent-windows/assets/app.ico` (embedded via `icon.rc`/`build.rs`)
@@ -224,10 +231,14 @@ selection between them at startup.
   after changing the icon with (run from `cmd/notify-agent-windows/`):
   `goversioninfo -icon=assets/app.ico -o=resource.syso versioninfo.json`.
 - The Go Windows head resolves identity via `WindowsUsernameIdentity`
-  (`identity_windows.go`), calling the Win32 `GetUserNameW` function
-  (`advapi32.dll`, via the same raw `NewLazySystemDLL`/`NewProc` pattern
-  `aumid.go` uses for `shell32.dll`) rather than an environment variable —
-  see the identity bullet above and `contracts-and-invariants.md`.
+  (`identity_windows.go`), calling the wrapped `GetUserNameEx` function
+  (`secur32.dll`, via `golang.org/x/sys/windows`) with
+  `windows.NameSamCompatible` to retrieve the domain-qualified
+  `DOMAIN\username` (or `MACHINENAME\username`) form, falling back to the
+  plain Win32 `GetUserNameW` (`advapi32.dll`, via the same raw
+  `NewLazySystemDLL`/`NewProc` pattern `aumid.go` uses for `shell32.dll`) if
+  `GetUserNameEx` fails — rather than an environment variable — see the
+  identity bullet above and `contracts-and-invariants.md`.
 - The Go Windows head logs via the standard library `log/slog` (text handler,
   stderr), covering identity resolution, NATS connect/subscribe, render
   failures, queue-full/bucket-overflow drops, and tray lifecycle events
