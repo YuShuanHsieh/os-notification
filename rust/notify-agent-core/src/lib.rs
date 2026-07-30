@@ -6,6 +6,7 @@ pub mod grapheme;
 pub mod host;
 pub mod identity;
 pub mod image_cache;
+pub mod metrics;
 pub mod model;
 pub mod nats_auth;
 pub mod parser;

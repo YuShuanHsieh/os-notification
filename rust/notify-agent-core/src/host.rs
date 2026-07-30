@@ -10,6 +10,7 @@ use crate::ack::{self, AckPayload, TelemetryPublisher};
 use crate::aggregator::{Aggregator, AggregatorConfig};
 use crate::dedup::DedupCache;
 use crate::identity::IdentityProvider;
+use crate::metrics::{AgentMetrics, NullAgentMetrics};
 use crate::nats_auth::NatsAuthProvider;
 use crate::pipeline::{build_agent, Pipeline, PipelineConfig, ReceivedEvent};
 use crate::toast::ToastRenderer;
@@ -22,7 +23,12 @@ pub struct AgentConfig {
 
 impl AgentConfig {
     pub fn from_env() -> Self {
-        let var = |k: &str, d: &str| std::env::var(k).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| d.into());
+        let var = |k: &str, d: &str| {
+            std::env::var(k)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| d.into())
+        };
         Self {
             nats_url: var("NOTIFY_NATS_URL", "nats://127.0.0.1:4222"),
             subject_template: var("NOTIFY_SUBJECT_TEMPLATE", "notify.user.{0}.desktop"), // design §4
@@ -65,7 +71,9 @@ impl AgentHost {
         identity: Arc<dyn IdentityProvider>,
         renderer: Arc<dyn ToastRenderer>,
         auth_provider: Option<Arc<dyn NatsAuthProvider>>,
+        metrics: Option<Arc<dyn AgentMetrics>>,
     ) -> anyhow::Result<AgentHost> {
+        let metrics = metrics.unwrap_or_else(|| Arc::new(NullAgentMetrics));
         let id = identity.identity().await?;
         tracing::debug!(user_id = %id.user_id, device_id = %id.device_id, "agent: identity resolved");
         tracing::debug!(url = %config.nats_url, authenticated = auth_provider.is_some(), "nats: connecting");
@@ -87,6 +95,7 @@ impl AgentHost {
             renderer,
             telemetry,
             id.device_id.clone(),
+            metrics,
         );
 
         let subject = config.subject_template.replace("{0}", &id.user_id);
@@ -123,11 +132,30 @@ impl AgentHost {
             }
         });
 
-        Ok(AgentHost { subject, client, pipeline: pipeline_half, aggregator, cancel, subscriber })
+        Ok(AgentHost {
+            subject,
+            client,
+            pipeline: pipeline_half,
+            aggregator,
+            cancel,
+            subscriber,
+        })
     }
 
     pub fn subject(&self) -> &str {
         &self.subject
+    }
+
+    /// Delegates to the pipeline's own counter. Parity with the Go
+    /// implementation's `Host.DroppedQueueFull()`.
+    pub fn dropped_queue_full(&self) -> u64 {
+        self.pipeline.dropped_queue_full()
+    }
+
+    /// Delegates to the aggregator's own counter. Parity with the Go
+    /// implementation's `Host.DroppedBucketOverflow()`.
+    pub fn dropped_bucket_overflow(&self) -> u64 {
+        self.aggregator.dropped_bucket_overflow()
     }
 
     pub async fn shutdown(self) -> anyhow::Result<()> {
