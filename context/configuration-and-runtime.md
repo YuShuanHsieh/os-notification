@@ -16,6 +16,9 @@
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | C#/Rust Windows MSAL/device-code identity |
 | `NOTIFY_LOG_LEVEL` | `Information` (C#) / `info` (Go) | C# Windows only: minimum `Microsoft.Extensions.Logging.LogLevel` for the console logger. Go: both heads, minimum `log/slog` level (`debug`/`info`/`warn`/`error`); Go Windows also accepts the settings file's `logLevel` (env wins when both are set) |
 | `RUST_LOG` | `info` | Rust only, both heads: `tracing_subscriber::EnvFilter` directive string (not just a bare level — supports per-module filters). Rust Windows also accepts the settings file's `logLevel` as a plain-level fallback when `RUST_LOG` is unset/blank (`RUST_LOG` wins when both are set) |
+| `NOTIFY_OTEL_ENABLED` | `false` | Go Windows head only: enables OpenTelemetry metrics export (`strconv.ParseBool`); also accepts the settings file's `otelEnabled` (env wins when both are set) |
+| `NOTIFY_OTEL_EXPORTER_ENDPOINT` | Unset → metrics stay off | Go Windows head only: OTLP/HTTP metrics exporter endpoint; also accepts the settings file's `otelExporterEndpoint` (env wins when both are set) |
+| `NOTIFY_OTEL_SERVICE_NAME` | `notify-agent-windows-golang` | Go Windows head only: `service.name` resource attribute for exported metrics; also accepts the settings file's `otelServiceName` (env wins when both are set) |
 | `NOTIFY_OTEL_ENABLED` | `false` | C# Windows only: enables OpenTelemetry OTLP metrics export (`true`/`false`, also accepts `1`/`0`); settings file's `otelEnabled` used when unset/blank |
 | `NOTIFY_OTEL_EXPORTER_ENDPOINT` | *(unset)* | C# Windows only: OTLP exporter endpoint URL; settings file's `otelExporterEndpoint` used when unset/blank. Metrics stay a no-op unless both this and `NOTIFY_OTEL_ENABLED`/`otelEnabled` resolve truthy |
 | `NOTIFY_OTEL_SERVICE_NAME` | `notify-agent-windows-csharp` | C# Windows only: OTel resource service name attached to exported metrics; settings file's `otelServiceName` used when unset/blank |
@@ -99,16 +102,64 @@ The Go Windows head also reads an optional JSON settings file at
 filename the C# Windows head uses, so an operator can configure a deployed
 agent without setting environment variables. Its schema is intentionally
 narrower than C#'s (see below for why): `natsUrl`, `subjectTemplate`,
-`ackSubject`, `natsCredsFile`, `deviceId`, `logLevel`. Precedence per field is
-environment variable (non-blank) > settings file value (non-blank) > built-in
-default — implemented by `ResolveHostOptions`/`ResolveCredsFile`/
-`ResolveDeviceID`/`ResolveLogLevel` layering the parsed `Settings` under
+`ackSubject`, `natsCredsFile`, `deviceId`, `logLevel`, plus three
+metrics-only fields — `otelEnabled` (bool, default `false`),
+`otelExporterEndpoint` (string, default blank), `otelServiceName` (string,
+default `notify-agent-windows-golang`) — see "Go Windows metrics
+(OpenTelemetry)" below. Precedence per field is environment variable
+(non-blank) > settings file value (non-blank) > built-in default —
+implemented by `ResolveHostOptions`/`ResolveCredsFile`/`ResolveDeviceID`/
+`ResolveLogLevel`/`ResolveOtelEnabled`/`ResolveOtelExporterEndpoint`/
+`ResolveOtelServiceName` layering the parsed `Settings` under
 `host.OptionsFromEnv()`'s result, never by modifying `host.Options` or
 `host.OptionsFromEnv` itself (those stay shared, cross-platform types). A
 missing file is normal and is never created or required; a malformed file logs
 a warning (`log/slog`) and is treated as all-defaults rather than failing
 startup. This file is specific to the Go Windows head; the Go console host and
 the C#/Rust Windows heads are unaffected.
+
+## Go Windows metrics (OpenTelemetry)
+
+The Go Windows head can optionally export three OpenTelemetry metrics over
+OTLP/HTTP (`golang/cmd/notify-agent-windows/otelmetrics.go`): an
+`agent.events.received` counter (once per valid, first-seen event accepted
+into the pipeline), an `agent.events.dropped` counter tagged with a `reason`
+attribute (`"queue_full"` or `"bucket_overflow"`), and an
+`agent.render.duration` histogram in seconds (once per source event
+represented in a rendered toast — a batched toast covering 3 events records
+3 observations, not 1). It is disabled by default; `otelEnabled`/
+`NOTIFY_OTEL_ENABLED` (env wins), a non-blank `otelExporterEndpoint`/
+`NOTIFY_OTEL_EXPORTER_ENDPOINT` (env wins), and `otelServiceName`/
+`NOTIFY_OTEL_SERVICE_NAME` (env wins, `service.name` resource attribute)
+turn it on.
+
+`golang/internal/metrics.AgentMetrics` is the interface this goes through —
+deliberately free of any `go.opentelemetry.io/otel*` import, mirroring the
+`identity.Provider`/`toast.Renderer`/`natsauth.Provider` pattern of "a small
+interface in `internal/*`, a real implementation supplied only by the head
+that needs it." Only `cmd/notify-agent-windows` imports the actual OTel
+SDK/exporter packages; `internal/host`, `internal/pipeline`, and
+`internal/aggregator` only ever see the interface (defaulting to
+`internal/metrics.NullAgentMetrics{}`, a no-op, when nothing is supplied),
+and the Go console head (`cmd/notify-agent-console`) never imports any
+`go.opentelemetry.io/otel*` package at all.
+
+Metrics-recording code can never crash the agent, by explicit design: every
+`AgentMetrics` call from `internal/host` is wrapped in a `safeRecord` helper
+(`defer recover()`), and the concrete OpenTelemetry implementation's own
+methods each carry their own `defer recover()` too — belt and suspenders,
+even though the stable OTel Go metric API's `Add`/`Record` calls don't
+themselves return errors. `InitMetrics` (the constructor called from
+`main.go` after the logger is configured) is wrapped the same way: any
+failure building the exporter, provider, or instruments is logged via
+`slog.Error` and falls back to `NullAgentMetrics{}` rather than aborting
+startup or being treated as fatal. `internal/pipeline`/`internal/aggregator`
+stay decoupled from `AgentMetrics` itself, matching their existing
+pipeline/aggregator-don't-know-about-telemetry architecture: each instead
+takes a small optional `func()` callback (`onDropped`, added to
+`pipeline.New`/`aggregator.New`) invoked at the exact point a drop is
+counted, which `internal/host` wires to a `safeRecord`-guarded
+`RecordEventDropped` call with the appropriate reason string.
 
 The Go port (`golang/internal/host.OptionsFromEnv`, `golang/internal/identity.EnvIdentity`)
 still has a narrower scope than the other two implementations for NATS auth, and
@@ -270,6 +321,14 @@ selection between them at startup.
   `NOTIFY_LOG_LEVEL` or the settings file's `logLevel` (env wins), default
   `info`. The Go console head uses the same `log/slog` convention,
   environment-only (no settings file), same default.
+- The Go Windows head can optionally export OpenTelemetry metrics (events
+  received/dropped, render duration) over OTLP/HTTP — off by default, see
+  "Go Windows metrics (OpenTelemetry)" above. This is the only place in the
+  Go port that imports any `go.opentelemetry.io/otel*` package; the Go
+  console head is unaffected and never imports it. Every metrics-recording
+  call site is `defer recover()`-guarded (in both `internal/host` and the
+  concrete OTel implementation), so a metrics failure — or a deliberate
+  telemetry misconfiguration at startup — can never crash the agent.
 
 ## Operational caveats
 
