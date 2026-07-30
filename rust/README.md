@@ -65,6 +65,9 @@ dotnet run --project ../tools/TestPublisher -- u_demo --scenario presence
 | `NOTIFY_NATS_CREDS_FILE` | — | Path to a standard NATS `.creds` file (JWT + NKey seed). If set, both heads authenticate to NATS with it. |
 | `NOTIFY_NATS_AUTH_SERVICE_URL` | — | HTTPS endpoint of an external NATS auth service (Windows head only). If set, takes precedence over `NOTIFY_NATS_CREDS_FILE` and requires `NOTIFY_AAD_CLIENT_ID` + `NOTIFY_NATS_AUTH_SERVICE_SCOPE`. |
 | `NOTIFY_NATS_AUTH_SERVICE_SCOPE` | — | AAD scope requested for the token used to call the external auth service. Required when `NOTIFY_NATS_AUTH_SERVICE_URL` is set. |
+| `NOTIFY_OTEL_ENABLED` | `false` | **Windows head only.** `true`/`1` enables the OpenTelemetry metrics pipeline; any other value (including unset) leaves it at the settings file's `otelEnabled` or the built-in default — see "OpenTelemetry metrics" below. |
+| `NOTIFY_OTEL_EXPORTER_ENDPOINT` | — | **Windows head only.** OTLP HTTP metrics collector endpoint, e.g. `http://localhost:4318`. Metrics stay off (no-op) while this is blank, even if `NOTIFY_OTEL_ENABLED=true`. |
+| `NOTIFY_OTEL_SERVICE_NAME` | `notify-agent-windows-rust` | **Windows head only.** `service.name` resource attribute attached to exported metrics. |
 
 ### Identity
 
@@ -95,11 +98,22 @@ All fields are optional; a missing file or malformed JSON logs a `tracing::warn!
   "aadClientId": "",
   "aadTenantId": "organizations",
   "deviceId": "",
-  "logLevel": "info"
+  "logLevel": "info",
+  "otelEnabled": false,
+  "otelExporterEndpoint": "",
+  "otelServiceName": "notify-agent-windows-rust"
 }
 ```
 
-Precedence for every field is the same: **environment variable (if set and non-blank) > settings file value (if non-blank) > built-in default above.** For example, `NOTIFY_NATS_URL` overrides `natsUrl`, which overrides the `nats://127.0.0.1:4222` default. `logLevel` feeds the startup log filter the same way `RUST_LOG` does (see Logging below); every other field maps 1:1 to an environment variable in the table above.
+Precedence for every field is the same: **environment variable (if set and non-blank) > settings file value (if non-blank) > built-in default above.** For example, `NOTIFY_NATS_URL` overrides `natsUrl`, which overrides the `nats://127.0.0.1:4222` default. `logLevel` feeds the startup log filter the same way `RUST_LOG` does (see Logging below); every other field maps 1:1 to an environment variable in the table above. `otelEnabled` is the one exception to "any non-blank env value wins": since it's a boolean, only `NOTIFY_OTEL_ENABLED=true`/`1` overrides it — any other env value (including an explicit `false`) falls through to the file/default instead of forcing it off (see `settings::resolved_bool`'s doc comment).
+
+### OpenTelemetry metrics (Windows head)
+
+The Windows head can optionally export three operational metrics — `notify_agent_events_received_total`, `notify_agent_events_dropped_total` (tagged with a `reason` attribute: `queue_full` or `bucket_overflow`), and `notify_agent_render_duration_seconds` (per-event agent processing latency) — via an OTLP HTTP exporter, configured entirely from the settings file above (`otelEnabled`/`otelExporterEndpoint`/`otelServiceName`) with the usual env-var overrides. It's off by default and stays off unless both `otelEnabled` is true *and* `otelExporterEndpoint` is non-blank.
+
+This is implemented as a small `AgentMetrics` trait in `notify-agent-core` (mirroring the `IdentityProvider`/`ToastRenderer`/`NatsAuthProvider` pattern already used for other pluggable, host-supplied behavior), with a no-op default and a real OpenTelemetry-backed implementation supplied only by `notify-agent-windows` (`src/otel_metrics.rs`) — `notify-agent-core` and `notify-agent-console` never depend on the `opentelemetry`/`opentelemetry-otlp` crates.
+
+**Crash safety is a hard requirement of this feature**: nothing metrics-related can ever crash the agent or interrupt event processing, dedup, aggregation, or ack publishing. This is achieved by construction rather than by wrapping call sites in `catch_unwind`: `otel_metrics::init` never panics and never fails startup — any setup error (a malformed endpoint, an exporter build failure) is logged via `tracing::warn!` and falls back to the no-op implementation instead; and the real implementation's three recording methods have no fallible internal step left once the OTel instruments are built (the OTel metrics API itself is designed as infallible/non-blocking — network issues surface inside the SDK's own background exporter thread, never back to the caller).
 
 ## Logging
 

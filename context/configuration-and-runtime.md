@@ -22,6 +22,9 @@
 | `NOTIFY_OTEL_ENABLED` | `false` | C# Windows only: enables OpenTelemetry OTLP metrics export (`true`/`false`, also accepts `1`/`0`); settings file's `otelEnabled` used when unset/blank |
 | `NOTIFY_OTEL_EXPORTER_ENDPOINT` | *(unset)* | C# Windows only: OTLP exporter endpoint URL; settings file's `otelExporterEndpoint` used when unset/blank. Metrics stay a no-op unless both this and `NOTIFY_OTEL_ENABLED`/`otelEnabled` resolve truthy |
 | `NOTIFY_OTEL_SERVICE_NAME` | `notify-agent-windows-csharp` | C# Windows only: OTel resource service name attached to exported metrics; settings file's `otelServiceName` used when unset/blank |
+| `NOTIFY_OTEL_ENABLED` | `false` | Rust Windows only: enables OpenTelemetry metrics export. Only `true`/`1` (case-insensitive) overrides; any other value (including unset or an explicit `false`) falls through to the settings file's `otelEnabled`, then the built-in default (`settings::resolved_bool`) |
+| `NOTIFY_OTEL_EXPORTER_ENDPOINT` | *(unset)* | Rust Windows only: OTLP/HTTP metrics exporter endpoint; settings file's `otelExporterEndpoint` used when unset/blank. Metrics stay a no-op unless both this and `NOTIFY_OTEL_ENABLED`/`otelEnabled` resolve truthy |
+| `NOTIFY_OTEL_SERVICE_NAME` | `notify-agent-windows-rust` | Rust Windows only: `service.name` resource attribute attached to exported metrics; settings file's `otelServiceName` used when unset/blank |
 
 `AgentOptions.FromEnvironment` owns transport configuration.
 `EnvironmentIdentityProvider` owns development identity configuration; it is used
@@ -80,19 +83,75 @@ the C#/Go Windows heads use, so an operator can configure a deployed agent
 without setting environment variables. Fields mirror the environment variables
 above: `natsUrl`, `subjectTemplate`, `ackSubject`, `natsCredsFile`,
 `natsAuthServiceUrl`, `natsAuthServiceScope`, `aadClientId`, `aadTenantId`,
-`deviceId`, `logLevel`. Precedence per field is environment variable (non-blank)
-> settings file value (non-blank) > built-in default — `settings::agent_config`
-and `settings::resolved_str`/`resolved_opt` layer the parsed `Settings` under
+`deviceId`, `logLevel`, plus three metrics-only fields — `otelEnabled` (bool,
+default `false`), `otelExporterEndpoint` (string, default blank),
+`otelServiceName` (string, default `notify-agent-windows-rust`) — see "Rust
+Windows metrics (OpenTelemetry)" below. Precedence per field is environment
+variable (non-blank) > settings file value (non-blank) > built-in default —
+`settings::agent_config` and `settings::resolved_str`/`resolved_opt`/
+`resolved_bool`/`resolved_otel_settings` layer the parsed `Settings` under
 each `std::env::var(...)` call, never by changing
 `notify_agent_core::host::AgentConfig::from_env` itself (shared with the console
-head, which stays pure-env). A missing file is normal and is never created or
-required; a malformed file logs a `tracing::warn!` and is treated as
-all-defaults rather than failing startup. `logLevel` feeds
+head, which stays pure-env). `otelEnabled` uses `resolved_bool` rather than
+`resolved_str`/`resolved_opt`: since it is a boolean, only an env value of
+`true`/`1` (case-insensitive) overrides — any other env value, including an
+explicit `false`, falls through to the file value instead of forcing it off
+(see that function's doc comment for the rationale). A missing file is normal
+and is never created or required; a malformed file logs a `tracing::warn!`
+and is treated as all-defaults rather than failing startup. `logLevel` feeds
 `tracing_subscriber`'s `EnvFilter` (see the `RUST_LOG` row above and the
 Windows-runtime logging bullet below); every other field's parsing/precedence
 logic is plain structs and runs under `cargo test` on any platform. This file
 is specific to the Rust Windows head; the console host and the C#/Go Windows
 heads are unaffected.
+
+## Rust Windows metrics (OpenTelemetry)
+
+The Rust Windows head can optionally export three OpenTelemetry metrics over
+OTLP/HTTP (`rust/notify-agent-windows/src/otel_metrics.rs`): a
+`notify_agent_events_received_total` counter (once per valid, first-seen
+event accepted into the pipeline — the same point the `observed_by_agent`
+ack is published), a `notify_agent_events_dropped_total` counter tagged with
+a `reason` attribute (`"queue_full"` or `"bucket_overflow"`), and a
+`notify_agent_render_duration_seconds` histogram (once per source event
+represented in a rendered toast, using that event's own
+`agent_received_at`/`toast_submitted_at` — a batched toast covering 3 events
+records 3 observations, not 1). It is disabled by default;
+`otelEnabled`/`NOTIFY_OTEL_ENABLED` (only `true`/`1` overrides — see "Rust
+Windows settings file" above) and a non-blank
+`otelExporterEndpoint`/`NOTIFY_OTEL_EXPORTER_ENDPOINT` together turn it on;
+`otelServiceName`/`NOTIFY_OTEL_SERVICE_NAME` sets the `service.name`
+resource attribute.
+
+`notify_agent_core::metrics::AgentMetrics` is the trait this goes through —
+deliberately free of any `opentelemetry`/`opentelemetry-otlp` dependency,
+mirroring the `IdentityProvider`/`ToastRenderer`/`NatsAuthProvider` pattern
+of "a small trait in Core, a no-op default, a real implementation supplied
+only by the head that needs it" (`NullAgentMetrics`, also in
+`notify_agent_core::metrics`). Only `notify-agent-windows` depends on the
+actual OTel SDK/exporter crates; `notify-agent-core`'s pipeline/aggregator
+only ever see the trait object (`Arc<dyn AgentMetrics>`, defaulting to
+`NullAgentMetrics` when `AgentHost::start`'s optional `metrics` parameter is
+`None`), and `notify-agent-console` never depends on any `opentelemetry*`
+crate at all (verified via `cargo tree -p notify-agent-console`).
+
+Metrics-recording code can never crash the agent, achieved by construction
+rather than by wrapping call sites in `std::panic::catch_unwind` (reserved
+here for FFI/thread boundaries, not routine same-thread calls — see
+`otel_metrics.rs`'s module doc comment for the full reasoning): the trait's
+three methods return `()`, not `Result`, so there is no fallible signature to
+begin with; the OTel-backed implementation has no `.unwrap()`/`.expect()`
+anywhere and no fallible internal step once its instruments are built,
+since the OTel metrics API's `Counter::add`/`Histogram::record` calls are
+themselves infallible/non-blocking by design (an unreachable collector is
+handled inside the SDK's own background `PeriodicReader` thread, never
+surfaced to the caller). `otel_metrics::init` (called from `main.rs`'s
+`start_host` after the tracing subscriber is installed, so failures are
+actually visible) never panics and never fails startup: any setup error — a
+malformed endpoint, an OTLP exporter build failure — is logged via
+`tracing::warn!` and falls back to `NullAgentMetrics` instead. When disabled
+or unconfigured (the default), `init` returns `NullAgentMetrics` immediately
+without constructing any OTel SDK type at all, so there is zero overhead.
 
 ## Go Windows settings file
 
