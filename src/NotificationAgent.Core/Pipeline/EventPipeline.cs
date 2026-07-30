@@ -25,6 +25,7 @@ public sealed class EventPipeline : IAsyncDisposable
     private readonly DeduplicationCache _dedup;
     private readonly Aggregator _aggregator;
     private readonly ITelemetryPublisher _telemetry;
+    private readonly IAgentMetrics _metrics;
     private readonly string _deviceId;
     private readonly PipelineOptions _options;
     private readonly List<Task> _workers = new();
@@ -38,13 +39,15 @@ public sealed class EventPipeline : IAsyncDisposable
         DeduplicationCache dedup,
         Aggregator aggregator,
         ITelemetryPublisher telemetry,
-        string deviceId)
+        string deviceId,
+        IAgentMetrics? metrics = null)
     {
         _options = options;
         _dedup = dedup;
         _aggregator = aggregator;
         _telemetry = telemetry;
         _deviceId = deviceId;
+        _metrics = metrics ?? NullAgentMetrics.Instance;
 
         // Wait mode + TryWrite (never blocks): TryWrite returns false when full, which
         // is our observable drop signal. DropWrite would return true and drop silently,
@@ -65,6 +68,7 @@ public sealed class EventPipeline : IAsyncDisposable
         }
 
         Interlocked.Increment(ref _droppedQueueFull);
+        _metrics.SafeRecordEventDropped("queue_full");
         return false;
     }
 
@@ -110,6 +114,7 @@ public sealed class EventPipeline : IAsyncDisposable
         await _telemetry.PublishAckAsync(
             new AckPayload(n.EventId, _deviceId, n.ReceivedAt, null, AckStatuses.ObservedByAgent),
             ct).ConfigureAwait(false);
+        _metrics.SafeRecordEventReceived();
         await _aggregator.AddAsync(n).ConfigureAwait(false);
     }
 
@@ -140,8 +145,10 @@ public static class AgentPipelineFactory
         IToastRenderer renderer,
         ITelemetryPublisher telemetry,
         string deviceId,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IAgentMetrics? metrics = null)
     {
+        var agentMetrics = metrics ?? NullAgentMetrics.Instance;
         var aggregator = new Aggregator(aggregatorOptions, timeProvider, async toast =>
         {
             var submittedAt = await renderer.ShowAsync(toast).ConfigureAwait(false);
@@ -153,9 +160,10 @@ public static class AgentPipelineFactory
                     source.ReceivedAt,
                     submittedAt,
                     AckStatuses.SubmittedToWindows)).ConfigureAwait(false);
+                agentMetrics.SafeRecordRenderDuration((submittedAt - source.ReceivedAt).TotalSeconds);
             }
-        });
-        var pipeline = new EventPipeline(pipelineOptions, dedup, aggregator, telemetry, deviceId);
+        }, agentMetrics);
+        var pipeline = new EventPipeline(pipelineOptions, dedup, aggregator, telemetry, deviceId, agentMetrics);
         return (pipeline, aggregator);
     }
 }

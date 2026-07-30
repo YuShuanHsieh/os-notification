@@ -11,7 +11,7 @@ public class AggregatorTests
     private readonly FakeTimeProvider _time = new();
     private readonly List<ToastRequest> _rendered = new();
 
-    private Aggregator Create(AggregatorOptions? options = null) =>
+    private Aggregator Create(AggregatorOptions? options = null, EventPipelineTests.RecordingMetrics? metrics = null) =>
         new(options ?? new AggregatorOptions(), _time, toast =>
         {
             lock (_rendered)
@@ -20,7 +20,7 @@ public class AggregatorTests
             }
 
             return ValueTask.CompletedTask;
-        });
+        }, metrics);
 
     private static InboundNotification Event(string id, EventPriority priority,
         string aggKey = "agg.key", bool replaceable = false, string message = "m") =>
@@ -111,5 +111,41 @@ public class AggregatorTests
         await agg.AddAsync(Event("e1", EventPriority.Normal));
         await agg.DisposeAsync();
         Assert.Single(_rendered);
+    }
+
+    [Fact]
+    public async Task Bucket_overflow_records_dropped_metric_directly_on_the_aggregator()
+    {
+        var metrics = new EventPipelineTests.RecordingMetrics();
+        await using var agg = Create(new AggregatorOptions { MaxBuckets = 2 }, metrics);
+        await agg.AddAsync(Event("a1", EventPriority.Normal, aggKey: "a"));
+        await agg.AddAsync(Event("b1", EventPriority.Normal, aggKey: "b"));
+        await agg.AddAsync(Event("c1", EventPriority.Normal, aggKey: "c")); // over cap → dropped
+
+        Assert.Equal(1, agg.DroppedBucketOverflow);
+        Assert.Equal("bucket_overflow", Assert.Single(metrics.Dropped));
+    }
+
+    [Fact]
+    public async Task Throwing_metrics_implementation_never_crashes_bucket_overflow_reporting()
+    {
+        // Crash-safety guarantee: a metrics implementation whose RecordEventDropped throws
+        // must not prevent the overflow itself from being tracked/dropped correctly.
+        var throwingMetrics = new EventPipelineTests.ThrowingMetrics();
+        var aggregator = new Aggregator(new AggregatorOptions { MaxBuckets = 1 }, _time, toast =>
+        {
+            lock (_rendered)
+            {
+                _rendered.Add(toast);
+            }
+
+            return ValueTask.CompletedTask;
+        }, throwingMetrics);
+        await using var _ = aggregator;
+
+        await aggregator.AddAsync(Event("a1", EventPriority.Normal, aggKey: "a"));
+        await aggregator.AddAsync(Event("b1", EventPriority.Normal, aggKey: "b")); // over cap
+
+        Assert.Equal(1, aggregator.DroppedBucketOverflow);
     }
 }
