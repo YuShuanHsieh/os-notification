@@ -184,15 +184,20 @@ selection between them at startup.
 - With an AAD client id, `DeviceCodeIdentity` runs the OIDC device-code sign-in
   flow (see "Identity" in `rust/README.md`). Without one,
   `rust/notify-agent-windows/src/windows_identity.rs`'s `WindowsUsernameIdentity`
-  derives a default identity from the Windows username, resolved via the
-  SAM-compatible, domain-qualified name format (`DOMAIN\username`, or
-  `MACHINENAME\username` when not domain-joined) so that two identically-named
-  accounts in different domains resolve to different identities, lowercases
-  it, and sanitizes it (replacing `.`, `*`, `>`, whitespace, the `\` separator,
-  and any other character outside `[a-z0-9_-]` with `_`, then appending a hash
-  suffix of the pre-sanitization value) before it reaches subject
-  construction — the same validated-username identity exception as the C#/Go
-  Windows heads; see `contracts-and-invariants.md`.
+  derives a default identity from the Windows username, calling
+  `GetUserNameExW` (`secur32.dll`, via the `windows` crate's
+  `Win32::Security::Authentication::Identity` module) with
+  `NameSamCompatible` to resolve the SAM-compatible, domain-qualified name
+  format (`DOMAIN\username`, or `MACHINENAME\username` when not
+  domain-joined) so that two identically-named accounts in different domains
+  resolve to different identities, falling back to the plain Win32
+  `GetUserNameW` (`advapi32.dll`) if `GetUserNameExW` fails or returns an
+  empty string. The resolved name is then lowercased and sanitized (replacing
+  `.`, `*`, `>`, whitespace, the `\` separator, and any other character
+  outside `[a-z0-9_-]` with `_`, then appending a hash suffix of the
+  pre-sanitization value) before it reaches subject construction — the same
+  validated-username identity exception as the C#/Go Windows heads; see
+  `contracts-and-invariants.md`.
 - `rust/notify-agent-windows/assets/app.ico` (embedded via `icon.rc`/`build.rs`)
   is a copy of the repo-root canonical `assets/app.ico`, matching the C#/Go
   Windows heads; do not regenerate it independently — see commit 9f58508 on why
