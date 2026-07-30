@@ -21,14 +21,36 @@ public partial class WindowsUsernameIdentityProviderTests
     }
 
     [Fact]
-    public async Task GetIdentityAsync_strips_a_domain_prefix_if_present()
+    public async Task GetIdentityAsync_retains_a_domain_prefix_if_present()
     {
-        var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CONTOSO\JDoe");
+        // Deliberately reversed from a previous round: the domain qualifier is now KEPT
+        // (not stripped), since the raw username source is the SAM-compatible,
+        // domain-qualified name (DOMAIN\username) rather than the bare Environment.UserName.
+        var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CORP\JDoe");
 
         var identity = await provider.GetIdentityAsync();
 
-        Assert.StartsWith("u_jdoe_", identity.UserId);
-        Assert.Matches(UserIdShapeRegex(), identity.UserId);
+        Assert.Matches("^u_corp_jdoe_[0-9a-f]{8}$", identity.UserId);
+    }
+
+    [Fact]
+    public async Task GetIdentityAsync_different_domains_with_the_same_username_do_not_collide()
+    {
+        // The actual point of this change: Environment.UserName never carried a domain, so
+        // "CORP\jdoe" and "CONTOSO\jdoe" (or an entirely unqualified "jdoe") would previously
+        // have collapsed onto the exact same derived identity. With the domain-qualified
+        // name retained end-to-end, they must now resolve to different ids.
+        var providerA = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CORP\jdoe");
+        var providerB = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CONTOSO\jdoe");
+        var providerC = new WindowsUsernameIdentityProvider(getRawUsername: () => "jdoe");
+
+        var identityA = await providerA.GetIdentityAsync();
+        var identityB = await providerB.GetIdentityAsync();
+        var identityC = await providerC.GetIdentityAsync();
+
+        Assert.NotEqual(identityA.UserId, identityB.UserId);
+        Assert.NotEqual(identityA.UserId, identityC.UserId);
+        Assert.NotEqual(identityB.UserId, identityC.UserId);
     }
 
     [Theory]
