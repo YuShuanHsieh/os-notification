@@ -24,8 +24,13 @@
 /// the actual OS lookup so it is unit-testable on any platform (including
 /// this Linux dev machine) without a real Windows username to query.
 ///
-/// - Strips a `DOMAIN\` prefix if present (some Win32 APIs return the
-///   qualified name on domain-joined machines).
+/// - Keeps a `DOMAIN\` prefix if present rather than stripping it: the input
+///   is the SAM-compatible qualified name (`DOMAIN\username`, or
+///   `MACHINENAME\username` on a non-domain-joined machine), and the domain
+///   is deliberately retained so two different domains' identically-named
+///   accounts (`CORP\jdoe` vs `CONTOSO\jdoe`) derive different identities
+///   instead of colliding. See `current_windows_username` below for how the
+///   qualified name is obtained.
 /// - Lowercases, matching the `u_{oid}` shape the AAD/device-code path
 ///   already produces.
 /// - Sanitizes via an *allowlist* (`[a-z0-9_-]`, everything else mapped to
@@ -55,13 +60,12 @@
 ///   id is always non-empty/usable regardless of how degenerate the
 ///   sanitized prefix is (e.g. an all-punctuation username sanitizes to all
 ///   underscores), so the only remaining error case is an empty username
-///   after trimming/domain-stripping. Same fix applied identically in the
-///   sibling C#/Go Windows-head implementations.
+///   after trimming. Same fix applied identically in the sibling C#/Go
+///   Windows-head implementations.
 pub fn user_id_from_username(raw: &str) -> anyhow::Result<String> {
-    let stripped = strip_domain_prefix(raw.trim());
-    let normalized = stripped.trim().to_lowercase();
+    let normalized = raw.trim().to_lowercase();
     if normalized.is_empty() {
-        anyhow::bail!("windows username {raw:?} is empty after trimming/stripping domain prefix");
+        anyhow::bail!("windows username {raw:?} is empty after trimming");
     }
     let sanitized: String = normalized
         .chars()
@@ -88,25 +92,74 @@ fn hash_prefix8(input: &str) -> String {
     digest[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Strips a `DOMAIN\` prefix if present (see `user_id_from_username`'s doc
-/// comment).
-fn strip_domain_prefix(raw: &str) -> &str {
-    raw.rsplit('\\').next().unwrap_or(raw)
-}
-
 #[cfg(windows)]
 mod win {
     use super::*;
     use async_trait::async_trait;
     use notify_agent_core::identity::{AgentIdentity, IdentityProvider};
 
-    /// Direct Win32 call (`advapi32.dll`'s `GetUserNameW`) rather than
-    /// `std::env::var("USERNAME")`: it asks the OS for the actual signed-in
-    /// account name instead of trusting a process environment variable
-    /// (which, in principle, could be absent, stale, or overridden by the
-    /// process's own environment), and it is the literal Win32 API this
-    /// feature asked for.
+    /// Direct Win32 call (`secur32.dll`'s `GetUserNameExW`, requested with
+    /// `NameSamCompatible`) rather than `std::env::var("USERNAME")`: it asks
+    /// the OS for the actual signed-in account name instead of trusting a
+    /// process environment variable (which, in principle, could be absent,
+    /// stale, or overridden by the process's own environment), and unlike
+    /// the plain `GetUserNameW` API, `NameSamCompatible` returns the
+    /// domain-qualified `DOMAIN\username` form (or `MACHINENAME\username` on
+    /// a non-domain-joined machine) — see `user_id_from_username`'s doc
+    /// comment for why the domain qualifier matters.
+    ///
+    /// Uses the same two-call buffer-size-discovery pattern as the
+    /// `GetUserNameW` call it replaces: call once to learn the required
+    /// buffer size, then call again with a correctly sized buffer. Unlike
+    /// `GetUserNameW`, `GetUserNameExW`'s size-on-success value does *not*
+    /// include the trailing NUL, so the two calls' returned lengths are not
+    /// interchangeable — each is handled according to its own documented
+    /// convention below.
     fn current_windows_username() -> anyhow::Result<String> {
+        use windows::core::PWSTR;
+        use windows::Win32::Security::Authentication::Identity::{
+            GetUserNameExW, NameSamCompatible,
+        };
+
+        // First call: an intentionally empty buffer always fails, but
+        // populates `len` with the required buffer size (in wide chars).
+        // GetUserNameExW does not document whether that required size
+        // includes room for the trailing NUL, so the second call below pads
+        // by one element to be safe.
+        let mut len: u32 = 0;
+        unsafe {
+            let _ = GetUserNameExW(NameSamCompatible, PWSTR::null(), &mut len);
+        }
+        if len == 0 {
+            anyhow::bail!("GetUserNameExW did not report a required buffer size");
+        }
+        let mut buf = vec![0u16; (len as usize) + 1];
+        let mut cap = buf.len() as u32;
+        let ok = unsafe { GetUserNameExW(NameSamCompatible, PWSTR(buf.as_mut_ptr()), &mut cap) };
+        if ok.0 == 0 {
+            let err = unsafe { windows::Win32::Foundation::GetLastError() };
+            anyhow::bail!("GetUserNameExW failed: {err:?}");
+        }
+        // On success `cap` is the number of characters written, *not*
+        // including the terminating NUL (the opposite convention from
+        // `GetUserNameW`'s success case, which does include it).
+        let end = (cap as usize).min(buf.len());
+        Ok(String::from_utf16_lossy(&buf[..end]))
+    }
+
+    /// Fallback used only if `GetUserNameExW` fails (e.g. `secur32.dll`'s
+    /// domain lookup is unavailable for some reason): the plain
+    /// `advapi32.dll` `GetUserNameW` API, which never returns a domain
+    /// prefix. Turning "domain info unavailable" into a hard startup
+    /// failure would be a regression from today's behavior (which has no
+    /// domain-lookup step to fail at all), so this falls back to a
+    /// bare-username identity rather than erroring out. Deliberately does
+    /// *not* attempt to reconstruct or strip a domain prefix here — this
+    /// path either has no domain qualifier to begin with (the whole reason
+    /// it's a fallback) or, on the off chance it did, the intent of this
+    /// change is domain-inclusive identity everywhere, so there is no
+    /// domain-stripping step anywhere in this module anymore.
+    fn current_windows_username_fallback() -> anyhow::Result<String> {
         use windows::core::PWSTR;
         use windows::Win32::System::WindowsProgramming::GetUserNameW;
 
@@ -135,7 +188,27 @@ mod win {
     #[async_trait]
     impl IdentityProvider for WindowsUsernameIdentity {
         async fn identity(&self) -> anyhow::Result<AgentIdentity> {
-            let username = current_windows_username()?;
+            // Prefer the domain-qualified `GetUserNameExW` lookup; fall back
+            // to the plain `GetUserNameW` API (see
+            // `current_windows_username_fallback`'s doc comment) rather than
+            // failing outright if it errors or comes back empty, since that
+            // path never had a domain-lookup step to fail at before this
+            // change.
+            let username = current_windows_username()
+                .and_then(|name| {
+                    if name.trim().is_empty() {
+                        anyhow::bail!("GetUserNameExW returned an empty username");
+                    }
+                    Ok(name)
+                })
+                .or_else(|primary_err| {
+                    current_windows_username_fallback().map_err(|fallback_err| {
+                        anyhow::anyhow!(
+                            "GetUserNameExW failed ({primary_err}) and GetUserNameW \
+                             fallback also failed ({fallback_err})"
+                        )
+                    })
+                })?;
             let user_id = user_id_from_username(&username)?;
             Ok(AgentIdentity {
                 user_id,
@@ -190,10 +263,13 @@ mod tests {
     }
 
     #[test]
-    fn strips_domain_prefix() {
+    fn retains_domain_prefix() {
+        // The point of this change: the domain qualifier is kept (sanitized
+        // to `_` like any other disallowed character) rather than stripped,
+        // so it contributes to both the sanitized prefix and the hash.
         let id = user_id_from_username(r"CONTOSO\Bob").unwrap();
         assert_matches_id_shape(&id);
-        assert!(id.starts_with("u_bob_"), "got {id:?}");
+        assert!(id.starts_with("u_contoso_bob_"), "got {id:?}");
     }
 
     #[test]
@@ -241,8 +317,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_domain_qualified_but_otherwise_empty_username() {
-        assert!(user_id_from_username(r"CONTOSO\").is_err());
+    fn distinguishes_domains_with_identical_usernames() {
+        // The actual regression this change fixes: `GetUserNameW` never
+        // returns a domain, so on a domain-joined machine two different
+        // domains' identically-named accounts used to derive the exact same
+        // identity. With the domain retained, they must now differ.
+        let corp = user_id_from_username(r"CORP\jdoe").unwrap();
+        let contoso = user_id_from_username(r"CONTOSO\jdoe").unwrap();
+        let no_domain = user_id_from_username("jdoe").unwrap();
+        assert_matches_id_shape(&corp);
+        assert_matches_id_shape(&contoso);
+        assert_matches_id_shape(&no_domain);
+        assert_ne!(
+            corp, contoso,
+            r"CORP\jdoe and CONTOSO\jdoe must not collide onto the same id, got {corp:?} == {contoso:?}"
+        );
+        assert_ne!(
+            corp, no_domain,
+            r"CORP\jdoe and bare jdoe must not collide onto the same id, got {corp:?} == {no_domain:?}"
+        );
+        assert_ne!(
+            contoso, no_domain,
+            r"CONTOSO\jdoe and bare jdoe must not collide onto the same id, got {contoso:?} == {no_domain:?}"
+        );
     }
 
     #[test]

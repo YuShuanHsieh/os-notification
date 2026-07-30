@@ -38,9 +38,10 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_Security_Authentication_Identity", # GetUserNameExW/EXTENDED_NAME_FORMAT, for the default Windows-username identity
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
-    "Win32_System_WindowsProgramming", # GetUserNameW, for the default Windows-username identity
+    "Win32_System_WindowsProgramming", # GetUserNameW, the plain-username fallback if GetUserNameExW fails
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
