@@ -2,12 +2,12 @@
 // platform-independent half of Feature 3 (deriving a default identity from
 // the OS username so NOTIFY_USER_ID is no longer required here).
 //
-// This file has no `//go:build windows` constraint: the raw
-// GetUserNameW syscall wrapper and the identity.Provider implementation
-// that calls it live in identity_windows.go, but the username -> "u_{...}"
-// transformation and its NATS-subject-safety validation are pure string
-// logic with no Windows-specific dependency, so they stay here, testable on
-// any platform -- same split as toastscript.go/settings.go.
+// This file has no `//go:build windows` constraint: the GetUserNameEx call
+// (SAM-compatible, domain-qualified name) and the identity.Provider
+// implementation that uses it live in identity_windows.go, but the
+// username -> "u_{...}" transformation and its NATS-subject-safety validation
+// are pure string logic with no Windows-specific dependency, so they stay
+// here, testable on any platform -- same split as toastscript.go/settings.go.
 //
 // Using the Windows account name as identity is a deliberate, documented,
 // Windows-heads-only exception to this product's general "OS account name
@@ -26,12 +26,23 @@ import (
 )
 
 // userIDFromWindowsUsername normalizes a raw Windows username (as returned
-// by GetUserNameW, which may be qualified as "DOMAIN\username") into this
-// product's "u_{...}" identity shape -- lowercased, matching the shape
-// other identity sources in this product use (e.g. "u_{oid}" for AAD) --
-// sanitized to be safe to embed in a NATS subject, and suffixed with a short
-// hash of the normalized (pre-sanitization) username so the mapping stays
-// injective (collision-resistant).
+// by GetUserNameEx's SAM-compatible format, "DOMAIN\username" or
+// "MACHINENAME\username") into this product's "u_{...}" identity shape --
+// lowercased, matching the shape other identity sources in this product use
+// (e.g. "u_{oid}" for AAD) -- sanitized to be safe to embed in a NATS
+// subject, and suffixed with a short hash of the normalized
+// (pre-sanitization) username so the mapping stays injective
+// (collision-resistant).
+//
+// The domain (or machine name, when not domain-joined) qualifier is
+// deliberately kept, not stripped: two identically-named accounts in
+// different domains (e.g. "CORP\jdoe" and "CONTOSO\jdoe") must resolve to
+// different identities, not collide onto the same one. The sanitize step
+// below already handles this with no special-casing -- the backslash is just
+// another character outside [a-z0-9_-] and becomes '_' like any other, so
+// "CORP\jdoe" and "CONTOSO\jdoe" sanitize to visibly different strings
+// ("corp_jdoe" vs "contoso_jdoe"), and the hash suffix is computed over the
+// full domain-qualified string, so it differs too.
 //
 // Windows account names are not under this product's control and commonly
 // contain characters a NATS subject can't safely carry -- a space ("John
@@ -51,17 +62,13 @@ import (
 // SHA-256(normalized username) are appended as a suffix -- computed from the
 // normalized string *before* sanitization, so two inputs that sanitize
 // identically still get different hashes and therefore different final user
-// IDs. This exact algorithm (sanitize + hash-of-normalized suffix) is shared
-// verbatim across this product's C# and Rust Windows-head implementations,
-// which have the identical bug/fix; keep them in sync if this changes.
+// IDs. This exact algorithm (sanitize + hash-of-normalized suffix, domain
+// retained) is shared verbatim across this product's C# and Rust
+// Windows-head implementations; keep them in sync if this changes.
 func userIDFromWindowsUsername(raw string) (string, error) {
-	name := raw
-	if idx := strings.LastIndexByte(name, '\\'); idx >= 0 {
-		name = name[idx+1:]
-	}
-	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized := strings.ToLower(strings.TrimSpace(raw))
 	if normalized == "" {
-		return "", fmt.Errorf("windows username %q is empty after stripping any domain prefix", raw)
+		return "", fmt.Errorf("windows username %q is empty", raw)
 	}
 
 	sanitized := sanitizeForIdentity(normalized)

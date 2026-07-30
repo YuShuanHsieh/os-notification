@@ -25,17 +25,17 @@ func TestUserIDFromWindowsUsername(t *testing.T) {
 	}{
 		{"plain username", "jdoe", "u_jdoe_", false},
 		{"mixed case lowercased", "JDoe", "u_jdoe_", false},
-		{"domain-qualified strips domain", `CONTOSO\jdoe`, "u_jdoe_", false},
-		{"domain-qualified mixed case", `Contoso\JDoe`, "u_jdoe_", false},
+		{"domain-qualified retains domain", `CONTOSO\jdoe`, "u_contoso_jdoe_", false},
+		{"domain-qualified mixed case", `Contoso\JDoe`, "u_contoso_jdoe_", false},
 		{"surrounding whitespace trimmed", "  jdoe  ", "u_jdoe_", false},
-		{"blank after stripping domain prefix errors", `CONTOSO\`, "", true},
+		{"domain-qualified with empty username after separator still valid", `CONTOSO\`, "u_contoso__", false},
 		{"empty raw errors", "", "", true},
 		{"whitespace only errors", "   ", "", true},
 		{"space sanitized (common Windows account name shape)", "John Doe", "u_john_doe_", false},
 		{"dot sanitized", "john.doe", "u_john_doe_", false},
 		{"asterisk sanitized", "user*name", "u_user_name_", false},
 		{"greater-than sanitized", "user>name", "u_user_name_", false},
-		{"domain-qualified username with dot sanitized", `CONTOSO\j.doe`, "u_j_doe_", false},
+		{"domain-qualified username with dot sanitized", `CONTOSO\j.doe`, "u_contoso_j_doe_", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -76,6 +76,47 @@ func TestUserIDFromWindowsUsername_Deterministic(t *testing.T) {
 		if first != second {
 			t.Fatalf("userIDFromWindowsUsername(%q) is not deterministic: %q != %q", raw, first, second)
 		}
+	}
+}
+
+// TestUserIDFromWindowsUsername_DifferentDomainsStayDistinct is the key
+// regression test for this change: GetUserNameEx's SAM-compatible format
+// returns a domain-qualified name ("DOMAIN\username"), and that domain must
+// now be *retained*, not stripped -- otherwise two identically-named
+// accounts in different domains (e.g. a real-world "CORP\jdoe" vs
+// "CONTOSO\jdoe") would silently collide onto the same derived identity/NATS
+// subject, exactly as they did under the old domain-stripping behavior this
+// change reverses.
+func TestUserIDFromWindowsUsername_DifferentDomainsStayDistinct(t *testing.T) {
+	corp, err := userIDFromWindowsUsername(`CORP\jdoe`)
+	if err != nil {
+		t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", `CORP\jdoe`, err)
+	}
+	contoso, err := userIDFromWindowsUsername(`CONTOSO\jdoe`)
+	if err != nil {
+		t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", `CONTOSO\jdoe`, err)
+	}
+	bare, err := userIDFromWindowsUsername("jdoe")
+	if err != nil {
+		t.Fatalf("userIDFromWindowsUsername(%q) unexpected error: %v", "jdoe", err)
+	}
+
+	if corp == contoso {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q and userIDFromWindowsUsername(%q) = %q, want distinct user IDs for distinct domains", `CORP\jdoe`, corp, `CONTOSO\jdoe`, contoso)
+	}
+	if corp == bare {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q and userIDFromWindowsUsername(%q) = %q, want distinct user IDs for a domain-qualified vs. bare username", `CORP\jdoe`, corp, "jdoe", bare)
+	}
+	if contoso == bare {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q and userIDFromWindowsUsername(%q) = %q, want distinct user IDs for a domain-qualified vs. bare username", `CONTOSO\jdoe`, contoso, "jdoe", bare)
+	}
+
+	wantCorpPrefix := "u_corp_jdoe_"
+	if !strings.HasPrefix(corp, wantCorpPrefix) {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q, want prefix %q", `CORP\jdoe`, corp, wantCorpPrefix)
+	}
+	if !userIDPattern.MatchString(corp) {
+		t.Fatalf("userIDFromWindowsUsername(%q) = %q, does not match pattern %s", `CORP\jdoe`, corp, userIDPattern.String())
 	}
 }
 
