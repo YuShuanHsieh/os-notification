@@ -111,6 +111,9 @@ dotnet test tests/NotificationAgent.Windows.Tests
 | `NOTIFY_AAD_CLIENT_ID` | *(unset → Windows-username identity)* | Windows head: enables MSAL/WAM |
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | Windows head (with client ID) |
 | `NOTIFY_LOG_LEVEL` | `Information` | Windows head only: minimum log level (`Trace`/`Debug`/`Information`/`Warning`/`Error`/`Critical`/`None`) |
+| `NOTIFY_OTEL_ENABLED` | `false` | Windows head only: enables OpenTelemetry OTLP metrics export (`true`/`false`, also accepts `1`/`0`) |
+| `NOTIFY_OTEL_EXPORTER_ENDPOINT` | *(unset)* | Windows head only: OTLP exporter endpoint URL; metrics stay a no-op unless this and `NOTIFY_OTEL_ENABLED` both resolve truthy |
+| `NOTIFY_OTEL_SERVICE_NAME` | `notify-agent-windows-csharp` | Windows head only: OTel resource service name attached to exported metrics |
 
 `NOTIFY_NATS_URL` also accepts a `wss://` (NATS WebSocket) URL — the NATS client
 detects the transport from the URL scheme automatically, so no other configuration
@@ -146,6 +149,28 @@ no AAD/external-auth-service support (see `golang/README.md`).
   "logLevel": "Information"
 }
 ```
+
+The C# schema additionally accepts three OTel metrics fields (default `false`/
+unset/`notify-agent-windows-csharp`, so telemetry is off unless explicitly
+configured):
+
+```json
+{
+  "otelEnabled": false,
+  "otelExporterEndpoint": "",
+  "otelServiceName": "notify-agent-windows-csharp"
+}
+```
+
+These configure an OpenTelemetry OTLP metrics exporter used only by the C#
+Windows head — Core and the console host never take a dependency on the
+`OpenTelemetry` NuGet package, matching the `IToastRenderer`/`IIdentityProvider`/
+`INatsAuthProvider` pattern (an `IAgentMetrics` interface + no-op default live in
+Core; the OTel-backed implementation lives in `NotificationAgent.Windows`). Every
+OTel SDK call — provider/exporter/instrument setup and every metric-recording
+call — is wrapped so a failure (bad endpoint, SDK init error, anything) is
+swallowed and logged rather than ever crashing the agent or interrupting event
+processing, dedup, aggregation, or ack publishing.
 
 Precedence per field is **environment variable (if set and non-blank) > settings
 file value (if present and non-blank) > built-in default**. A missing file is

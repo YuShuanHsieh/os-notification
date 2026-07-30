@@ -16,6 +16,9 @@
 | `NOTIFY_AAD_TENANT_ID` | `organizations` | C#/Rust Windows MSAL/device-code identity |
 | `NOTIFY_LOG_LEVEL` | `Information` (C#) / `info` (Go) | C# Windows only: minimum `Microsoft.Extensions.Logging.LogLevel` for the console logger. Go: both heads, minimum `log/slog` level (`debug`/`info`/`warn`/`error`); Go Windows also accepts the settings file's `logLevel` (env wins when both are set) |
 | `RUST_LOG` | `info` | Rust only, both heads: `tracing_subscriber::EnvFilter` directive string (not just a bare level — supports per-module filters). Rust Windows also accepts the settings file's `logLevel` as a plain-level fallback when `RUST_LOG` is unset/blank (`RUST_LOG` wins when both are set) |
+| `NOTIFY_OTEL_ENABLED` | `false` | C# Windows only: enables OpenTelemetry OTLP metrics export (`true`/`false`, also accepts `1`/`0`); settings file's `otelEnabled` used when unset/blank |
+| `NOTIFY_OTEL_EXPORTER_ENDPOINT` | *(unset)* | C# Windows only: OTLP exporter endpoint URL; settings file's `otelExporterEndpoint` used when unset/blank. Metrics stay a no-op unless both this and `NOTIFY_OTEL_ENABLED`/`otelEnabled` resolve truthy |
+| `NOTIFY_OTEL_SERVICE_NAME` | `notify-agent-windows-csharp` | C# Windows only: OTel resource service name attached to exported metrics; settings file's `otelServiceName` used when unset/blank |
 
 `AgentOptions.FromEnvironment` owns transport configuration.
 `EnvironmentIdentityProvider` owns development identity configuration; it is used
@@ -43,11 +46,27 @@ The C# Windows head also reads an optional JSON settings file at
 deployed agent without setting environment variables. All fields are optional and
 mirror the environment variables above: `natsUrl`, `subjectTemplate`, `ackSubject`,
 `natsCredsFile`, `natsAuthServiceUrl`, `natsAuthServiceScope`, `aadClientId`,
-`aadTenantId`, `deviceId`, `logLevel`. Precedence per field is environment variable
+`aadTenantId`, `deviceId`, `logLevel`, `otelEnabled`, `otelExporterEndpoint`,
+`otelServiceName`. Precedence per field is environment variable
 (non-blank) > settings file value (non-blank) > built-in default. A missing file is
 normal and is never created or required; a malformed file logs a warning and is
 treated as all-defaults rather than failing startup. This file is specific to the C#
 Windows head; the console host and the Rust/Go Windows heads are unaffected.
+
+`otelEnabled`/`otelExporterEndpoint`/`otelServiceName` (defaults `false`/unset/
+`notify-agent-windows-csharp`) configure an OpenTelemetry OTLP metrics exporter
+built by `NotificationAgent.Windows/OpenTelemetryAgentMetrics.cs`, wired into
+`IAgentMetrics` (`NotificationAgent.Core/Telemetry/IAgentMetrics.cs`) — the same
+interface/no-op-default split already used for `IToastRenderer`/
+`IIdentityProvider`/`INatsAuthProvider`, so Core and the console host stay free
+of the `OpenTelemetry` NuGet package. Metrics recording is fully crash-safe: every
+OTel SDK call (provider/exporter/instrument construction, and every `.Add()`/
+`.Record()` call from Core) is wrapped in try/catch, so a metrics failure —
+misconfigured endpoint, SDK init failure, or anything else — is swallowed and
+logged (`Log.OtelSetupFailed`/`Log.OtelEnabledWithoutEndpoint`) rather than ever
+interrupting event processing, dedup, aggregation, or ack publishing. When
+disabled (the default), no `Meter`/`MeterProvider` is constructed at all, so
+there is zero OTel overhead.
 
 ## Rust Windows settings file
 
