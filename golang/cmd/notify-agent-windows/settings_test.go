@@ -77,22 +77,87 @@ func TestParseSettings_AllFields(t *testing.T) {
 		"ackSubject": "notify.ack.custom",
 		"natsCredsFile": "C:\\creds\\agent.creds",
 		"deviceId": "d-override",
-		"logLevel": "warn"
+		"logLevel": "warn",
+		"otelEnabled": true,
+		"otelExporterEndpoint": "collector.example:4318",
+		"otelServiceName": "custom-service-name"
 	}`)
 	s, err := ParseSettings(data)
 	if err != nil {
 		t.Fatalf("ParseSettings: %v", err)
 	}
 	want := Settings{
-		NatsURL:         "nats://host:4222",
-		SubjectTemplate: "notify.user.%s.custom",
-		AckSubject:      "notify.ack.custom",
-		NatsCredsFile:   `C:\creds\agent.creds`,
-		DeviceID:        "d-override",
-		LogLevel:        "warn",
+		NatsURL:              "nats://host:4222",
+		SubjectTemplate:      "notify.user.%s.custom",
+		AckSubject:           "notify.ack.custom",
+		NatsCredsFile:        `C:\creds\agent.creds`,
+		DeviceID:             "d-override",
+		LogLevel:             "warn",
+		OtelEnabled:          true,
+		OtelExporterEndpoint: "collector.example:4318",
+		OtelServiceName:      "custom-service-name",
 	}
 	if s != want {
 		t.Fatalf("ParseSettings = %+v, want %+v", s, want)
+	}
+}
+
+func TestResolveOtelEnabled_Precedence(t *testing.T) {
+	if got := ResolveOtelEnabled(noEnv, Settings{}); got != false {
+		t.Errorf("ResolveOtelEnabled = %v, want false default when nothing configured", got)
+	}
+	if got := ResolveOtelEnabled(noEnv, Settings{OtelEnabled: true}); got != true {
+		t.Errorf("ResolveOtelEnabled = %v, want true (file value) when env unset", got)
+	}
+	getenvTrue := envMap(map[string]string{"NOTIFY_OTEL_ENABLED": "true"})
+	if got := ResolveOtelEnabled(getenvTrue, Settings{OtelEnabled: false}); got != true {
+		t.Errorf("ResolveOtelEnabled = %v, want true (env wins over file)", got)
+	}
+	getenvFalse := envMap(map[string]string{"NOTIFY_OTEL_ENABLED": "false"})
+	if got := ResolveOtelEnabled(getenvFalse, Settings{OtelEnabled: true}); got != false {
+		t.Errorf("ResolveOtelEnabled = %v, want false (env wins over file, even to turn it off)", got)
+	}
+	// An unparseable env value falls through to the file value rather than
+	// erroring or silently defaulting to false.
+	getenvGarbage := envMap(map[string]string{"NOTIFY_OTEL_ENABLED": "not-a-bool"})
+	if got := ResolveOtelEnabled(getenvGarbage, Settings{OtelEnabled: true}); got != true {
+		t.Errorf("ResolveOtelEnabled = %v, want file value when env is unparseable", got)
+	}
+	// "1" is a valid strconv.ParseBool spelling of true.
+	getenvOne := envMap(map[string]string{"NOTIFY_OTEL_ENABLED": "1"})
+	if got := ResolveOtelEnabled(getenvOne, Settings{}); got != true {
+		t.Errorf(`ResolveOtelEnabled = %v, want true for env value "1"`, got)
+	}
+}
+
+func TestResolveOtelExporterEndpoint_Precedence(t *testing.T) {
+	if got := ResolveOtelExporterEndpoint(noEnv, Settings{}); got != "" {
+		t.Errorf("ResolveOtelExporterEndpoint = %q, want blank when nothing configured", got)
+	}
+	if got := ResolveOtelExporterEndpoint(noEnv, Settings{OtelExporterEndpoint: "file.example:4318"}); got != "file.example:4318" {
+		t.Errorf("ResolveOtelExporterEndpoint = %q, want file value when env unset", got)
+	}
+	getenv := envMap(map[string]string{"NOTIFY_OTEL_EXPORTER_ENDPOINT": "env.example:4318"})
+	if got := ResolveOtelExporterEndpoint(getenv, Settings{OtelExporterEndpoint: "file.example:4318"}); got != "env.example:4318" {
+		t.Errorf("ResolveOtelExporterEndpoint = %q, want env value to win", got)
+	}
+	// A whitespace-only settings-file value is treated as unset, matching
+	// every other field's isBlank rule.
+	if got := ResolveOtelExporterEndpoint(noEnv, Settings{OtelExporterEndpoint: "   "}); got != "" {
+		t.Errorf("ResolveOtelExporterEndpoint with whitespace-only file value = %q, want blank", got)
+	}
+}
+
+func TestResolveOtelServiceName_Precedence(t *testing.T) {
+	if got := ResolveOtelServiceName(noEnv, Settings{}); got != defaultOtelServiceName {
+		t.Errorf("ResolveOtelServiceName = %q, want default %q when nothing configured", got, defaultOtelServiceName)
+	}
+	if got := ResolveOtelServiceName(noEnv, Settings{OtelServiceName: "file-service"}); got != "file-service" {
+		t.Errorf("ResolveOtelServiceName = %q, want file value when env unset", got)
+	}
+	getenv := envMap(map[string]string{"NOTIFY_OTEL_SERVICE_NAME": "env-service"})
+	if got := ResolveOtelServiceName(getenv, Settings{OtelServiceName: "file-service"}); got != "env-service" {
+		t.Errorf("ResolveOtelServiceName = %q, want env value to win", got)
 	}
 }
 
