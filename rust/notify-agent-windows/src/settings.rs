@@ -42,6 +42,14 @@ pub struct Settings {
     pub aad_tenant_id: Option<String>,
     pub device_id: Option<String>,
     pub log_level: Option<String>,
+    /// Feature: OTel metrics. Default `false` (opentelemetry SDK setup never
+    /// runs, zero overhead) unless overridden here or by `NOTIFY_OTEL_ENABLED`.
+    pub otel_enabled: Option<bool>,
+    /// OTLP HTTP metrics exporter endpoint, e.g. `http://localhost:4318`. A
+    /// blank/absent value (the default) disables metrics entirely, same as
+    /// `otel_enabled: false` — see `otel_metrics::init`.
+    pub otel_exporter_endpoint: Option<String>,
+    pub otel_service_name: Option<String>,
 }
 
 /// Parses settings JSON. Malformed input yields `Err` with a diagnostic
@@ -131,6 +139,51 @@ pub fn resolved_opt(env_var: &str, file_value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// Env-var-over-file-over-default precedence for a boolean field. Unlike
+/// `resolved_str`/`resolved_opt`, an env var only overrides when it
+/// unambiguously means "true" (`"true"`/`"1"`, case-insensitive); any other
+/// value — including an explicit `"false"`, blank, or unset — falls through
+/// to the file value (then the built-in default) instead of being treated
+/// as an override to `false`. This is a deliberate asymmetry: there is no
+/// way to force-disable via env var something the settings file enables,
+/// only to force-enable. That's an acceptable trade-off here since the
+/// built-in default is already `false` (see `otelEnabled`'s doc comment) —
+/// the only env-var use case this must serve is "turn it on for this run".
+pub fn resolved_bool(env_var: &str, file_value: Option<bool>, default: bool) -> bool {
+    if let Ok(v) = std::env::var(env_var) {
+        let trimmed = v.trim().to_ascii_lowercase();
+        if trimmed == "true" || trimmed == "1" {
+            return true;
+        }
+    }
+    file_value.unwrap_or(default)
+}
+
+/// Effective OTel metrics configuration, resolved with the same
+/// env-over-file-over-default precedence as every other setting in this
+/// file. Consumed by `otel_metrics::init`.
+pub struct ResolvedOtelSettings {
+    pub enabled: bool,
+    pub exporter_endpoint: String,
+    pub service_name: String,
+}
+
+pub fn resolved_otel_settings(settings: &Settings) -> ResolvedOtelSettings {
+    ResolvedOtelSettings {
+        enabled: resolved_bool("NOTIFY_OTEL_ENABLED", settings.otel_enabled, false),
+        exporter_endpoint: resolved_str(
+            "NOTIFY_OTEL_EXPORTER_ENDPOINT",
+            settings.otel_exporter_endpoint.as_deref(),
+            "",
+        ),
+        service_name: resolved_str(
+            "NOTIFY_OTEL_SERVICE_NAME",
+            settings.otel_service_name.as_deref(),
+            "notify-agent-windows-rust",
+        ),
+    }
 }
 
 /// Builds an `AgentConfig` by layering settings-file values under
@@ -264,7 +317,10 @@ mod tests {
             "aadClientId": "client-1",
             "aadTenantId": "tenant-1",
             "deviceId": "d-fixed",
-            "logLevel": "debug"
+            "logLevel": "debug",
+            "otelEnabled": true,
+            "otelExporterEndpoint": "http://collector.example:4318",
+            "otelServiceName": "custom-service-name"
         }"#;
         let settings = parse(json).unwrap();
         assert_eq!(settings.nats_url.as_deref(), Some("nats://example:4222"));
@@ -286,6 +342,15 @@ mod tests {
         assert_eq!(settings.aad_tenant_id.as_deref(), Some("tenant-1"));
         assert_eq!(settings.device_id.as_deref(), Some("d-fixed"));
         assert_eq!(settings.log_level.as_deref(), Some("debug"));
+        assert_eq!(settings.otel_enabled, Some(true));
+        assert_eq!(
+            settings.otel_exporter_endpoint.as_deref(),
+            Some("http://collector.example:4318")
+        );
+        assert_eq!(
+            settings.otel_service_name.as_deref(),
+            Some("custom-service-name")
+        );
     }
 
     #[test]
@@ -444,5 +509,101 @@ mod tests {
         };
         assert_eq!(resolve_log_directive(&settings), "warn");
         clear(&["RUST_LOG"]);
+    }
+
+    #[test]
+    fn resolved_bool_env_true_or_1_overrides_file_and_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear(&["NOTIFY_TEST_BOOL"]);
+        std::env::set_var("NOTIFY_TEST_BOOL", "true");
+        assert!(resolved_bool("NOTIFY_TEST_BOOL", Some(false), false));
+        std::env::set_var("NOTIFY_TEST_BOOL", "1");
+        assert!(resolved_bool("NOTIFY_TEST_BOOL", None, false));
+        std::env::set_var("NOTIFY_TEST_BOOL", "TRUE");
+        assert!(
+            resolved_bool("NOTIFY_TEST_BOOL", None, false),
+            "must be case-insensitive"
+        );
+        clear(&["NOTIFY_TEST_BOOL"]);
+    }
+
+    #[test]
+    fn resolved_bool_falls_through_to_file_then_default_for_anything_else() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear(&["NOTIFY_TEST_BOOL"]);
+        // Unset env -> file value wins.
+        assert!(resolved_bool("NOTIFY_TEST_BOOL", Some(true), false));
+        // Unset env, no file value -> default.
+        assert!(!resolved_bool("NOTIFY_TEST_BOOL", None, false));
+        // An explicit "false" (or any non-true/1 value) does not force an
+        // override to false; it falls through to the file value instead —
+        // see resolved_bool's doc comment for why.
+        std::env::set_var("NOTIFY_TEST_BOOL", "false");
+        assert!(resolved_bool("NOTIFY_TEST_BOOL", Some(true), false));
+        std::env::set_var("NOTIFY_TEST_BOOL", "garbage");
+        assert!(!resolved_bool("NOTIFY_TEST_BOOL", None, false));
+        clear(&["NOTIFY_TEST_BOOL"]);
+    }
+
+    #[test]
+    fn resolved_otel_settings_uses_defaults_when_nothing_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear(&[
+            "NOTIFY_OTEL_ENABLED",
+            "NOTIFY_OTEL_EXPORTER_ENDPOINT",
+            "NOTIFY_OTEL_SERVICE_NAME",
+        ]);
+        let resolved = resolved_otel_settings(&Settings::default());
+        assert!(!resolved.enabled);
+        assert_eq!(resolved.exporter_endpoint, "");
+        assert_eq!(resolved.service_name, "notify-agent-windows-rust");
+    }
+
+    #[test]
+    fn resolved_otel_settings_uses_file_values_when_env_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear(&[
+            "NOTIFY_OTEL_ENABLED",
+            "NOTIFY_OTEL_EXPORTER_ENDPOINT",
+            "NOTIFY_OTEL_SERVICE_NAME",
+        ]);
+        let settings = Settings {
+            otel_enabled: Some(true),
+            otel_exporter_endpoint: Some("http://collector:4318".into()),
+            otel_service_name: Some("svc-from-file".into()),
+            ..Settings::default()
+        };
+        let resolved = resolved_otel_settings(&settings);
+        assert!(resolved.enabled);
+        assert_eq!(resolved.exporter_endpoint, "http://collector:4318");
+        assert_eq!(resolved.service_name, "svc-from-file");
+    }
+
+    #[test]
+    fn resolved_otel_settings_env_overrides_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear(&[
+            "NOTIFY_OTEL_ENABLED",
+            "NOTIFY_OTEL_EXPORTER_ENDPOINT",
+            "NOTIFY_OTEL_SERVICE_NAME",
+        ]);
+        std::env::set_var("NOTIFY_OTEL_ENABLED", "1");
+        std::env::set_var("NOTIFY_OTEL_EXPORTER_ENDPOINT", "http://from-env:4318");
+        std::env::set_var("NOTIFY_OTEL_SERVICE_NAME", "svc-from-env");
+        let settings = Settings {
+            otel_enabled: Some(false),
+            otel_exporter_endpoint: Some("http://from-file:4318".into()),
+            otel_service_name: Some("svc-from-file".into()),
+            ..Settings::default()
+        };
+        let resolved = resolved_otel_settings(&settings);
+        assert!(resolved.enabled);
+        assert_eq!(resolved.exporter_endpoint, "http://from-env:4318");
+        assert_eq!(resolved.service_name, "svc-from-env");
+        clear(&[
+            "NOTIFY_OTEL_ENABLED",
+            "NOTIFY_OTEL_EXPORTER_ENDPOINT",
+            "NOTIFY_OTEL_SERVICE_NAME",
+        ]);
     }
 }

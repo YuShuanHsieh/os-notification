@@ -8,6 +8,27 @@ anyhow = "1"
 async-trait = "0.1"
 chrono = "0.4"
 notify-agent-core = { path = "../notify-agent-core" }
+# OpenTelemetry metrics backend (feature: OTel metrics). Deliberately NOT a
+# dependency of notify-agent-core (see metrics.rs's doc comment) or of
+# notify-agent-console — only this head links the OTel SDK. Not gated under
+# `[target.'cfg(windows)']` like the `windows`/`winreg` crates below: unlike
+# those, opentelemetry/opentelemetry-otlp compile fine on any host, and
+# otel_metrics.rs's own tests (init() with telemetry disabled, init() with a
+# malformed endpoint) need to run under plain `cargo test` on this Linux dev
+# machine too.
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics"] }
+# reqwest-blocking-client (not reqwest-client): opentelemetry_sdk's default
+# PeriodicReader spawns its own OS thread and is documented as incompatible
+# with async HTTP clients (reqwest-client/hyper-client) — see
+# opentelemetry_sdk::metrics::PeriodicReader's doc comment. The blocking
+# client still works fine called from that reader's own thread; nothing here
+# runs it on a tokio worker thread.
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "http-proto",
+    "metrics",
+    "reqwest-blocking-client",
+] }
 # Not re-exported from the notify-agent-core path dependency, even though core
 # depends on the same crates — Cargo dependencies aren't transitive across
 # crate boundaries, so the settings-file JSON (de)serialization here needs its

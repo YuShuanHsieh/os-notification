@@ -6,6 +6,7 @@
 // including this Linux dev machine. Only the small pieces that actually need
 // a Windows API or a Windows-only env var (`LOCALAPPDATA`) are internally
 // gated; see each module's doc comment.
+mod otel_metrics;
 mod settings;
 mod windows_identity;
 
@@ -379,7 +380,9 @@ mod win {
             },
         };
 
-        let host = AgentHost::start(config, identity, renderer, auth_provider).await?;
+        let metrics = crate::otel_metrics::init(settings);
+        let host =
+            AgentHost::start(config, identity, renderer, auth_provider, Some(metrics)).await?;
         Ok(host)
     }
 }
