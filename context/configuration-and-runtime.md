@@ -74,6 +74,11 @@ interrupting event processing, dedup, aggregation, or ack publishing. When
 disabled (the default), no `Meter`/`MeterProvider` is constructed at all, so
 there is zero OTel overhead.
 
+`otelExporterEndpoint` must be a complete OTLP/HTTP URL (e.g.
+`http://collector:4318`), since the exporter is explicitly configured with
+`OtlpExportProtocol.HttpProtobuf` to match the Go and Rust heads — unlike Go,
+which accepts a bare `host:port` value for its own OTLP/HTTP client.
+
 ## Rust Windows settings file
 
 The Rust Windows head also reads an optional JSON settings file at

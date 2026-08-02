@@ -105,6 +105,11 @@ impl Aggregator {
                 .dropped_bucket_overflow
                 .fetch_add(1, Ordering::Relaxed)
                 + 1;
+            // Release the lock before calling into a pluggable, external
+            // implementation: holding it here would poison the mutex (and
+            // wedge every future add()/shutdown() call) if that
+            // implementation ever panics, violating its own contract.
+            drop(buckets);
             tracing::warn!(
                 dropped_bucket_overflow = dropped,
                 "dropping event because the aggregation bucket limit is reached"

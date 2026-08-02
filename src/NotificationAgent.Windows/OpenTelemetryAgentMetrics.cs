@@ -3,6 +3,7 @@ using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 using NotificationAgent.Core.Telemetry;
 using OpenTelemetry;
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 
@@ -79,7 +80,16 @@ public sealed class OpenTelemetryAgentMetrics : IAgentMetrics, IDisposable
             var meterProvider = Sdk.CreateMeterProviderBuilder()
                 .AddMeter(MeterName)
                 .ConfigureResource(r => r.AddService(serviceName))
-                .AddOtlpExporter(o => o.Endpoint = new Uri(exporterEndpoint))
+                .AddOtlpExporter(o =>
+                {
+                    // AddOtlpExporter defaults to gRPC, but the Go and Rust heads both use
+                    // OTLP/HTTP -- a shared collector endpoint (e.g. "http://collector:4318")
+                    // would otherwise be dialed with the wrong protocol here and silently fail
+                    // to export. exporterEndpoint must be the full HTTP URL (unlike Go, which
+                    // accepts a bare host:port) -- see the settings-file docs.
+                    o.Protocol = OtlpExportProtocol.HttpProtobuf;
+                    o.Endpoint = new Uri(exporterEndpoint);
+                })
                 .Build();
             return new OpenTelemetryAgentMetrics(meter, meterProvider);
         }

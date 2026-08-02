@@ -834,12 +834,12 @@ func waitUntilHostTest(t *testing.T, timeout time.Duration, cond func() bool) {
 	}
 }
 
-// TestHostDropsInvokeMetricsRecordEventDroppedWithCorrectReason proves
-// host.start wires the pipeline's and aggregator's OnDropped callbacks to
-// the injected AgentMetrics' RecordEventDropped with the documented reason
-// strings ("queue_full", "bucket_overflow") -- constructed directly with
-// the exact same closures host.start uses (no live NATS needed, since
-// dropping at the pipeline/aggregator layer never touches NATS).
+// TestHostDropsInvokeMetricsRecordEventDroppedWithCorrectReason exercises
+// the drop-to-metric closures host.start uses, replicated here verbatim, to
+// prove each drop path reports the documented reason string ("queue_full",
+// "bucket_overflow") through safeRecord. It does not call start itself, so
+// it does not cover the wiring in start -- no live NATS is needed, since
+// dropping at the pipeline/aggregator layer never touches NATS.
 func TestHostDropsInvokeMetricsRecordEventDroppedWithCorrectReason(t *testing.T) {
 	clk := clock.RealClock{}
 	rm := &recordingMetrics{}

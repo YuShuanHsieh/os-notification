@@ -63,6 +63,13 @@ type trayApp struct {
 	// host.Start treats a nil AgentMetrics the same as
 	// metrics.NullAgentMetrics{}.
 	metrics metrics.AgentMetrics
+
+	// shutdownMetrics flushes and tears down the MeterProvider backing
+	// metrics (main.go's InitMetrics call). watchClose invokes it during the
+	// bounded graceful shutdown, before os.Exit(0), so metrics recorded
+	// since the last periodic export interval aren't silently lost. Nil-safe
+	// like metrics above: watchClose only calls it when non-nil.
+	shutdownMetrics func(context.Context) error
 }
 
 func (a *trayApp) onReady() {
@@ -135,10 +142,15 @@ func (a *trayApp) watchClose(closeItem *systray.MenuItem) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		defer cancel()
 		if h := a.h.Load(); h != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-			defer cancel()
 			_ = h.Shutdown(ctx)
+		}
+		if a.shutdownMetrics != nil {
+			if err := a.shutdownMetrics(ctx); err != nil {
+				slog.Warn("otelmetrics: shutdown/flush failed", "error", err)
+			}
 		}
 	}()
 

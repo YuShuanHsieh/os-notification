@@ -7,9 +7,9 @@
 // supply it" pattern already used by identity.Provider, toast.Renderer, and
 // natsauth.Provider (see e.g. internal/identity's package doc). Only
 // cmd/notify-agent-windows constructs a real OpenTelemetry-backed
-// AgentMetrics; cmd/notify-agent-console never touches this package's
-// NullAgentMetrics is used unconditionally, and internal/host defaults to it
-// whenever no metrics implementation is supplied.
+// AgentMetrics. cmd/notify-agent-console never configures metrics, so
+// NullAgentMetrics is used unconditionally there, and internal/host defaults
+// to NullAgentMetrics whenever no metrics implementation is supplied.
 package metrics
 
 // AgentMetrics records the three critical operational metrics for this

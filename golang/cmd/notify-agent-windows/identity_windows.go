@@ -57,20 +57,19 @@ func getWindowsUserName() (string, error) {
 // (secur32.dll) with windows.NameSamCompatible to retrieve the
 // "DOMAIN\username" (or "MACHINENAME\username" when not domain-joined) name
 // of the user associated with the calling thread. GetUserNameEx's calling
-// convention requires two calls, same shape as GetUserNameW's: the first,
-// with an undersized buffer, fails with ERROR_INSUFFICIENT_BUFFER and
-// reports the required buffer size (in UTF-16 code units, including the
-// terminating null) through the in/out size parameter; the second, with a
-// correctly sized buffer, succeeds and returns the name. This matches how
-// golang.org/x/sys/windows's own TranslateAccountName (security_windows.go)
-// handles the sibling TranslateName secur32.dll call.
+// convention requires two calls: the first, with an undersized buffer,
+// fails with ERROR_MORE_DATA (not ERROR_INSUFFICIENT_BUFFER -- that's
+// GetUserNameW's error code, GetUserNameEx's is different per its own MSDN
+// docs) and reports the required buffer size (in UTF-16 code units,
+// including the terminating null) through the in/out size parameter; the
+// second, with a correctly sized buffer, succeeds and returns the name.
 func getWindowsSamCompatibleName() (string, error) {
 	var size uint32 = 1
 	buf := make([]uint16, size)
 
 	err := windows.GetUserNameEx(windows.NameSamCompatible, &buf[0], &size)
 	if err != nil {
-		if err != windows.ERROR_INSUFFICIENT_BUFFER {
+		if err != windows.ERROR_MORE_DATA {
 			return "", fmt.Errorf("GetUserNameEx: get required buffer size: %w", err)
 		}
 	}

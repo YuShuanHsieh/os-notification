@@ -85,9 +85,9 @@ func run() int {
 	// falls back to a no-op metrics.AgentMetrics on any problem (disabled,
 	// unconfigured, or a failed exporter/provider/instrument setup) --
 	// never a reason to abort startup.
-	agentMetrics := InitMetrics(context.Background(), settings)
+	agentMetrics, shutdownMetrics := InitMetrics(context.Background(), settings)
 
-	app := &trayApp{settings: settings, metrics: agentMetrics}
+	app := &trayApp{settings: settings, metrics: agentMetrics, shutdownMetrics: shutdownMetrics}
 	systray.Run(app.onReady, app.onExit)
 	return 0
 }

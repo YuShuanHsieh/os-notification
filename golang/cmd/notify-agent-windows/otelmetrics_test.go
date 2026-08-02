@@ -30,7 +30,7 @@ func TestInitMetricsDisabledReturnsNullAgentMetricsQuickly(t *testing.T) {
 	s := Settings{OtelEnabled: false, OtelExporterEndpoint: "collector.example:4318"}
 
 	start := time.Now()
-	got := InitMetrics(context.Background(), s)
+	got, _ := InitMetrics(context.Background(), s)
 	elapsed := time.Since(start)
 
 	if _, ok := got.(metrics.NullAgentMetrics); !ok {
@@ -47,7 +47,7 @@ func TestInitMetricsDisabledReturnsNullAgentMetricsQuickly(t *testing.T) {
 func TestInitMetricsBlankEndpointReturnsNullAgentMetrics(t *testing.T) {
 	s := Settings{OtelEnabled: true, OtelExporterEndpoint: "   "}
 
-	got := InitMetrics(context.Background(), s)
+	got, _ := InitMetrics(context.Background(), s)
 
 	if _, ok := got.(metrics.NullAgentMetrics); !ok {
 		t.Fatalf("InitMetrics with blank endpoint = %T, want metrics.NullAgentMetrics", got)
@@ -63,6 +63,7 @@ func TestInitMetricsBlankEndpointReturnsNullAgentMetrics(t *testing.T) {
 // eagerly, so this also exercises the fallback path for whatever
 // construction step (endpoint parsing, instrument creation) could fail.
 func TestInitMetricsInvalidEndpointFallsBackToNullAgentMetricsWithoutPanic(t *testing.T) {
+	resetGlobalMeterProvider(t)
 	s := Settings{
 		OtelEnabled: true,
 		// A deliberately malformed endpoint (contains a scheme and a path,
@@ -78,13 +79,16 @@ func TestInitMetricsInvalidEndpointFallsBackToNullAgentMetricsWithoutPanic(t *te
 			t.Fatalf("InitMetrics panicked with an invalid endpoint: %v", r)
 		}
 	}()
-	got := InitMetrics(context.Background(), s)
+	got, shutdown := InitMetrics(context.Background(), s)
 
 	// Whether or not exporter construction itself happens to return an
 	// error for this particular malformed string, InitMetrics must return
 	// *some* usable, non-nil AgentMetrics -- never nil, never a panic.
 	if got == nil {
 		t.Fatal("InitMetrics returned nil, want a non-nil AgentMetrics (NullAgentMetrics at minimum)")
+	}
+	if shutdown == nil {
+		t.Fatal("InitMetrics returned a nil shutdown func, want a non-nil no-op at minimum")
 	}
 
 	// Exercise every method on whatever was returned -- proving it's safe
@@ -115,7 +119,7 @@ func TestInitMetricsWithExtremeEndpointNeverPanics(t *testing.T) {
 			t.Fatalf("InitMetrics panicked: %v", r)
 		}
 	}()
-	if got := InitMetrics(context.Background(), s); got == nil {
+	if got, _ := InitMetrics(context.Background(), s); got == nil {
 		t.Fatal("InitMetrics returned nil, want a non-nil AgentMetrics")
 	}
 }

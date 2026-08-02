@@ -40,6 +40,31 @@ pub struct OtelAgentMetrics {
     render_duration: opentelemetry::metrics::Histogram<f64>,
 }
 
+/// A shutdown-capable handle for the `MeterProvider` `init` builds, so a
+/// caller can flush pending metrics before process exit. Deliberately
+/// doesn't leak `opentelemetry_sdk` types past this module's public API:
+/// callers just hold this and call `shutdown()`. Holds nothing (a no-op
+/// `shutdown()`) when `init` fell back to `NullAgentMetrics` -- there is no
+/// live provider to flush/tear down in that case.
+#[derive(Clone, Default)]
+pub struct MetricsShutdown(Option<opentelemetry_sdk::metrics::SdkMeterProvider>);
+
+impl MetricsShutdown {
+    /// Flushes pending metrics and tears down the underlying `MeterProvider`
+    /// (a no-op if `init` returned the disabled/no-op path). Must be called
+    /// after `AgentHost::shutdown()` and before the process exits: the
+    /// `PeriodicReader` only exports on its own interval or on shutdown, so
+    /// skipping this silently drops whatever was recorded since the last
+    /// interval.
+    pub fn shutdown(&self) {
+        if let Some(provider) = &self.0 {
+            if let Err(error) = provider.shutdown() {
+                tracing::warn!(%error, "otel metrics: shutdown/flush failed");
+            }
+        }
+    }
+}
+
 impl notify_agent_core::metrics::AgentMetrics for OtelAgentMetrics {
     fn record_event_received(&self) {
         self.events_received.add(1, &[]);
@@ -65,23 +90,32 @@ impl notify_agent_core::metrics::AgentMetrics for OtelAgentMetrics {
 /// back to `NullAgentMetrics` just like the disabled case.
 pub fn init(
     settings: &crate::settings::Settings,
-) -> std::sync::Arc<dyn notify_agent_core::metrics::AgentMetrics> {
+) -> (
+    std::sync::Arc<dyn notify_agent_core::metrics::AgentMetrics>,
+    MetricsShutdown,
+) {
     let resolved = crate::settings::resolved_otel_settings(settings);
     if !resolved.enabled || resolved.exporter_endpoint.is_empty() {
         tracing::debug!(
             "otel metrics: disabled (otelEnabled=false or no exporter endpoint configured)"
         );
-        return std::sync::Arc::new(notify_agent_core::metrics::NullAgentMetrics);
+        return (
+            std::sync::Arc::new(notify_agent_core::metrics::NullAgentMetrics),
+            MetricsShutdown::default(),
+        );
     }
 
     match build(&resolved) {
-        Ok(metrics) => {
+        Ok((metrics, provider)) => {
             tracing::info!(
                 endpoint = %resolved.exporter_endpoint,
                 service_name = %resolved.service_name,
                 "otel metrics: enabled"
             );
-            std::sync::Arc::new(metrics)
+            (
+                std::sync::Arc::new(metrics),
+                MetricsShutdown(Some(provider)),
+            )
         }
         Err(error) => {
             tracing::warn!(
@@ -89,7 +123,10 @@ pub fn init(
                 endpoint = %resolved.exporter_endpoint,
                 "otel metrics: setup failed, continuing without metrics"
             );
-            std::sync::Arc::new(notify_agent_core::metrics::NullAgentMetrics)
+            (
+                std::sync::Arc::new(notify_agent_core::metrics::NullAgentMetrics),
+                MetricsShutdown::default(),
+            )
         }
     }
 }
@@ -98,7 +135,14 @@ pub fn init(
 /// `?`-propagated `Err` here, with exactly one place (`init`, above)
 /// responsible for turning that into a logged warning plus a
 /// `NullAgentMetrics` fallback — never a panic, never an aborted startup.
-fn build(resolved: &crate::settings::ResolvedOtelSettings) -> anyhow::Result<OtelAgentMetrics> {
+/// Returns the `SdkMeterProvider` alongside the metrics implementation so
+/// `init` can hand the caller a shutdown-capable handle.
+fn build(
+    resolved: &crate::settings::ResolvedOtelSettings,
+) -> anyhow::Result<(
+    OtelAgentMetrics,
+    opentelemetry_sdk::metrics::SdkMeterProvider,
+)> {
     use opentelemetry_otlp::WithExportConfig;
 
     let exporter = opentelemetry_otlp::MetricExporter::builder()
@@ -129,20 +173,23 @@ fn build(resolved: &crate::settings::ResolvedOtelSettings) -> anyhow::Result<Ote
     // instrument name: an OTel-to-Prometheus bridge already appends it, so baking it in here risks
     // a doubled suffix (e.g. "..._total_total") once bridged. Keep these three names identical
     // across all three language implementations of this agent.
-    Ok(OtelAgentMetrics {
-        events_received: meter
-            .u64_counter("agent.events.received")
-            .with_unit("1")
-            .build(),
-        events_dropped: meter
-            .u64_counter("agent.events.dropped")
-            .with_unit("1")
-            .build(),
-        render_duration: meter
-            .f64_histogram("agent.render.duration")
-            .with_unit("s")
-            .build(),
-    })
+    Ok((
+        OtelAgentMetrics {
+            events_received: meter
+                .u64_counter("agent.events.received")
+                .with_unit("1")
+                .build(),
+            events_dropped: meter
+                .u64_counter("agent.events.dropped")
+                .with_unit("1")
+                .build(),
+            render_duration: meter
+                .f64_histogram("agent.render.duration")
+                .with_unit("s")
+                .build(),
+        },
+        provider,
+    ))
 }
 
 #[cfg(test)]
@@ -170,13 +217,14 @@ mod tests {
             "NOTIFY_OTEL_EXPORTER_ENDPOINT",
             "NOTIFY_OTEL_SERVICE_NAME",
         ]);
-        let metrics = init(&Settings::default());
+        let (metrics, shutdown) = init(&Settings::default());
         // No live collector, no network configured anywhere in this test:
         // if init() attempted any real OTel SDK setup here, it would either
         // panic or hang. Calling every method proves it's the inert no-op.
         metrics.record_event_received();
         metrics.record_event_dropped("queue_full");
         metrics.record_render_duration(0.5);
+        shutdown.shutdown(); // must be a no-op, not a hang/panic
     }
 
     #[test]
@@ -192,7 +240,7 @@ mod tests {
             otel_exporter_endpoint: None, // blank: no endpoint configured
             ..Settings::default()
         };
-        let metrics = init(&settings);
+        let (metrics, _shutdown) = init(&settings);
         metrics.record_event_received(); // must not panic
     }
 
@@ -215,7 +263,7 @@ mod tests {
             otel_exporter_endpoint: Some("not a valid uri \0".into()),
             ..Settings::default()
         };
-        let metrics = init(&settings); // must not panic, must not hang
+        let (metrics, _shutdown) = init(&settings); // must not panic, must not hang
         metrics.record_event_received();
         metrics.record_event_dropped("bucket_overflow");
         metrics.record_render_duration(1.25);
@@ -232,8 +280,12 @@ mod tests {
             exporter_endpoint: "http://127.0.0.1:1".to_string(), // valid URL, nothing listening
             service_name: "test-service".to_string(),
         };
-        let metrics = build(&resolved).expect("build must not require a live collector");
+        let (metrics, provider) =
+            build(&resolved).expect("build must not require a live collector");
         metrics.record_event_received();
         metrics.record_render_duration(0.01);
+        provider
+            .shutdown()
+            .expect("shutdown must succeed for an unreachable-but-valid endpoint");
     }
 }

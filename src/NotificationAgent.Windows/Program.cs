@@ -85,4 +85,5 @@ if (startupLogger.IsEnabled(LogLevel.Information))
 
 Application.Run(new TrayApplicationContext(
     ct => AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider, metrics, ct: ct),
-    loggerFactory.CreateLogger<TrayApplicationContext>()));
+    loggerFactory.CreateLogger<TrayApplicationContext>(),
+    metrics as IDisposable));

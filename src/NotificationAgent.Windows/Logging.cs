@@ -64,4 +64,7 @@ internal static partial class Log
 
     [LoggerMessage(EventId = 16, Level = LogLevel.Warning, Message = "otelEnabled is true but no exporter endpoint is configured; falling back to no-op metrics.")]
     public static partial void OtelEnabledWithoutEndpoint(this ILogger logger);
+
+    [LoggerMessage(EventId = 17, Level = LogLevel.Warning, Message = "OpenTelemetry metrics shutdown/flush failed.")]
+    public static partial void OtelShutdownFailed(this ILogger logger, Exception exception);
 }

@@ -57,6 +57,7 @@ public sealed class Aggregator : IAsyncDisposable
             return;
         }
 
+        var droppedByOverflow = false;
         lock (_gate)
         {
             var key = (n.AggregationKey, n.Priority);
@@ -65,23 +66,36 @@ public sealed class Aggregator : IAsyncDisposable
                 if (_buckets.Count >= _options.MaxBuckets)
                 {
                     Interlocked.Increment(ref _droppedBucketOverflow);
-                    _metrics.SafeRecordEventDropped("bucket_overflow");
-                    return;
+                    droppedByOverflow = true;
+                }
+                else
+                {
+                    bucket = new Bucket();
+                    _buckets[key] = bucket;
+                    var window = n.Priority == EventPriority.Important
+                        ? _options.ImportantWindow : _options.NormalWindow;
+                    bucket.Timer = _time.CreateTimer(_ => Flush(key), null, window, Timeout.InfiniteTimeSpan);
+                }
+            }
+
+            if (!droppedByOverflow)
+            {
+                if (n.Replaceable)
+                {
+                    bucket!.Events.Clear();
                 }
 
-                bucket = new Bucket();
-                _buckets[key] = bucket;
-                var window = n.Priority == EventPriority.Important
-                    ? _options.ImportantWindow : _options.NormalWindow;
-                bucket.Timer = _time.CreateTimer(_ => Flush(key), null, window, Timeout.InfiniteTimeSpan);
+                bucket!.Events.Add(n);
             }
+        }
 
-            if (n.Replaceable)
-            {
-                bucket.Events.Clear();
-            }
-
-            bucket.Events.Add(n);
+        // Recorded outside _gate: an injected IAgentMetrics is external (real-world
+        // implementation lives in the Windows head), and this matches the Go aggregator's
+        // ordering (unlock first, then call the drop callback) -- holding the lock here would
+        // needlessly serialize every drop behind whatever the metrics call does.
+        if (droppedByOverflow)
+        {
+            _metrics.SafeRecordEventDropped("bucket_overflow");
         }
     }
 

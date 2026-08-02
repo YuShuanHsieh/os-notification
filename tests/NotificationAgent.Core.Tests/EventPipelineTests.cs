@@ -28,6 +28,13 @@ public class EventPipelineTests
 
     internal sealed class RecordingMetrics : IAgentMetrics
     {
+        // One shared gate for every field: pipeline worker threads can write any of these
+        // concurrently, so reads (including WaitUntilAsync's polling predicate and the final
+        // assertions) must take the same lock as the writers, not just enumerate/read the
+        // fields directly -- otherwise `Assert.Single(RenderDurations)` etc. can race a
+        // concurrent Add or observe a stale value.
+        public object Gate { get; } = new();
+
         public int EventsReceived
         {
             get; private set;
@@ -39,7 +46,7 @@ public class EventPipelineTests
 
         public void RecordEventReceived()
         {
-            lock (Dropped)
+            lock (Gate)
             {
                 EventsReceived++;
             }
@@ -47,7 +54,7 @@ public class EventPipelineTests
 
         public void RecordEventDropped(string reason)
         {
-            lock (Dropped)
+            lock (Gate)
             {
                 Dropped.Add(reason);
             }
@@ -55,7 +62,7 @@ public class EventPipelineTests
 
         public void RecordRenderDuration(double seconds)
         {
-            lock (RenderDurations)
+            lock (Gate)
             {
                 RenderDurations.Add(seconds);
             }
@@ -236,12 +243,21 @@ public class EventPipelineTests
         pipeline.Start();
 
         Assert.True(pipeline.TryEnqueue(CriticalEvent("evt-1")));
-        await WaitUntilAsync(() => metrics.RenderDurations.Count == 1);
+        await WaitUntilAsync(() =>
+        {
+            lock (metrics.Gate)
+            {
+                return metrics.RenderDurations.Count == 1;
+            }
+        });
 
-        Assert.Equal(1, metrics.EventsReceived);
-        var expectedSeconds = (renderer.SubmitAt - ReceivedAt).TotalSeconds;
-        Assert.Equal(expectedSeconds, Assert.Single(metrics.RenderDurations));
-        Assert.Empty(metrics.Dropped);
+        lock (metrics.Gate)
+        {
+            Assert.Equal(1, metrics.EventsReceived);
+            var expectedSeconds = (renderer.SubmitAt - ReceivedAt).TotalSeconds;
+            Assert.Equal(expectedSeconds, Assert.Single(metrics.RenderDurations));
+            Assert.Empty(metrics.Dropped);
+        }
     }
 
     [Fact]
@@ -279,9 +295,18 @@ public class EventPipelineTests
         // bucket overflows and is dropped.
         pipeline.TryEnqueue(NormalEvent("evt-a", "agg-a"));
         pipeline.TryEnqueue(NormalEvent("evt-b", "agg-b"));
-        await WaitUntilAsync(() => metrics.Dropped.Count == 1);
+        await WaitUntilAsync(() =>
+        {
+            lock (metrics.Gate)
+            {
+                return metrics.Dropped.Count == 1;
+            }
+        });
 
-        Assert.Equal("bucket_overflow", Assert.Single(metrics.Dropped));
+        lock (metrics.Gate)
+        {
+            Assert.Equal("bucket_overflow", Assert.Single(metrics.Dropped));
+        }
     }
 
     [Fact]
