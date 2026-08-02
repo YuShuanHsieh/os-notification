@@ -15,6 +15,7 @@ import (
 	"github.com/getlantern/systray"
 
 	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/metrics"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/natsauth"
 )
 
@@ -53,6 +54,22 @@ type trayApp struct {
 	// life of the process, so no synchronization is needed to read it from
 	// startAgent's goroutine.
 	settings Settings
+
+	// metrics is the AgentMetrics constructed once at process startup
+	// (main.go's InitMetrics call), before systray.Run -- like settings, it
+	// never changes for the life of the process, so no synchronization is
+	// needed to read it from startAgent's goroutine. Nil-safe: a zero-value
+	// trayApp (as tests might construct) has a nil metrics field, but
+	// host.Start treats a nil AgentMetrics the same as
+	// metrics.NullAgentMetrics{}.
+	metrics metrics.AgentMetrics
+
+	// shutdownMetrics flushes and tears down the MeterProvider backing
+	// metrics (main.go's InitMetrics call). watchClose invokes it during the
+	// bounded graceful shutdown, before os.Exit(0), so metrics recorded
+	// since the last periodic export interval aren't silently lost. Nil-safe
+	// like metrics above: watchClose only calls it when non-nil.
+	shutdownMetrics func(context.Context) error
 }
 
 func (a *trayApp) onReady() {
@@ -95,7 +112,7 @@ func (a *trayApp) startAgent() {
 	// doc). This Go port has no AAD/MSAL/device-code sign-in at all, so it
 	// is used unconditionally rather than only as an AAD fallback.
 	idp := WindowsUsernameIdentity{Getenv: os.Getenv, Settings: a.settings}
-	h, err := host.Start(context.Background(), opts, idp, renderer, authProvider)
+	h, err := host.Start(context.Background(), opts, idp, renderer, authProvider, a.metrics)
 	if err != nil {
 		// slog.Error alone is sufficient here: main.go installs a text
 		// handler that writes to os.Stderr, so a separate raw
@@ -125,10 +142,15 @@ func (a *trayApp) watchClose(closeItem *systray.MenuItem) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		defer cancel()
 		if h := a.h.Load(); h != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-			defer cancel()
 			_ = h.Shutdown(ctx)
+		}
+		if a.shutdownMetrics != nil {
+			if err := a.shutdownMetrics(ctx); err != nil {
+				slog.Warn("otelmetrics: shutdown/flush failed", "error", err)
+			}
 		}
 	}()
 

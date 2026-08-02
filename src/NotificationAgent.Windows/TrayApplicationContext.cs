@@ -14,11 +14,19 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private readonly NotifyIcon _notifyIcon;
     private readonly ILogger? _logger;
+    private readonly IDisposable? _metrics;
     private volatile AgentHost? _host;
 
-    public TrayApplicationContext(Func<CancellationToken, Task<AgentHost>> startAgent, ILogger? logger = null)
+    /// <param name="metrics">The concrete metrics implementation, if it is <see cref="IDisposable"/>
+    /// (e.g. <c>OpenTelemetryAgentMetrics</c>) -- disposed explicitly on Close, before
+    /// <see cref="Environment.Exit"/>, since a top-level <c>using</c> declaration in Program.cs can
+    /// never run after that hard exit. Pass <see langword="null"/> for <c>NullAgentMetrics</c>
+    /// (nothing to dispose) or when telemetry is disabled.</param>
+    public TrayApplicationContext(
+        Func<CancellationToken, Task<AgentHost>> startAgent, ILogger? logger = null, IDisposable? metrics = null)
     {
         _logger = logger;
+        _metrics = metrics;
         var versionItem = new ToolStripMenuItem($"Version {VersionInfo.Current}")
         {
             Enabled = false,
@@ -97,6 +105,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         await TrayShutdown.CloseAsync(
             host is null ? () => Task.CompletedTask : () => host.DisposeAsync().AsTask(),
             CloseTimeout);
+
+        // Dispose the metrics implementation (if any) after the host, so metrics recorded
+        // during shutdown are still captured -- and before Environment.Exit(0), since a
+        // top-level `using` declaration back in Program.cs would never run after that hard
+        // exit and would silently drop whatever OpenTelemetry hadn't yet flushed/exported.
+        try
+        {
+            _metrics?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _logger?.OtelShutdownFailed(ex);
+        }
+
         ExitThread();
         Environment.Exit(0);
     }

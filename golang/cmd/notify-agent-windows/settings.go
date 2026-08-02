@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/YuShuanHsieh/os-notification/golang/internal/host"
@@ -38,6 +39,18 @@ type Settings struct {
 	NatsCredsFile   string `json:"natsCredsFile"`
 	DeviceID        string `json:"deviceId"`
 	LogLevel        string `json:"logLevel"`
+
+	// OtelEnabled, OtelExporterEndpoint, and OtelServiceName configure this
+	// head's optional OpenTelemetry metrics export (see otelmetrics.go).
+	// OtelEnabled is a plain bool (unlike the string fields above, which use
+	// "blank" to mean "not configured"): the built-in default is itself
+	// false, so a settings-file field absent from the JSON (decoding to the
+	// bool zero value, false) and one explicitly set to false are
+	// indistinguishable in effect, and no tri-state ("not configured" vs.
+	// "configured off") representation is needed.
+	OtelEnabled          bool   `json:"otelEnabled"`
+	OtelExporterEndpoint string `json:"otelExporterEndpoint"`
+	OtelServiceName      string `json:"otelServiceName"`
 }
 
 // ParseSettings parses raw settings.json bytes into a Settings value.
@@ -184,4 +197,51 @@ func ResolveLogLevel(getenv func(string) string, s Settings) slog.Level {
 		return lvl
 	}
 	return defaultLogLevel
+}
+
+// defaultOtelServiceName is the built-in default for the otelServiceName
+// field/NOTIFY_OTEL_SERVICE_NAME override, used whenever neither is set.
+const defaultOtelServiceName = "notify-agent-windows-golang"
+
+// ResolveOtelEnabled applies the same env-then-file precedence to whether
+// OpenTelemetry metrics export is enabled. NOTIFY_OTEL_ENABLED is parsed via
+// strconv.ParseBool (accepting "1"/"t"/"T"/"TRUE"/"true"/"True" and the
+// analogous false spellings); an unset, blank, or unparseable env value
+// falls through to the settings file's otelEnabled bool. The built-in
+// default (when neither tier resolves it) is false -- OpenTelemetry export
+// is opt-in, never on by default.
+func ResolveOtelEnabled(getenv func(string) string, s Settings) bool {
+	if v := getenv("NOTIFY_OTEL_ENABLED"); !isBlank(v) {
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			return b
+		}
+	}
+	return s.OtelEnabled
+}
+
+// ResolveOtelExporterEndpoint applies the same env-then-file precedence to
+// the OTLP metrics exporter endpoint. A blank result means "no endpoint
+// configured" -- InitMetrics (otelmetrics.go) treats that the same as
+// OtelEnabled being false: metrics stay off, never a startup failure.
+func ResolveOtelExporterEndpoint(getenv func(string) string, s Settings) string {
+	if v := getenv("NOTIFY_OTEL_EXPORTER_ENDPOINT"); !isBlank(v) {
+		return v
+	}
+	if isBlank(s.OtelExporterEndpoint) {
+		return ""
+	}
+	return s.OtelExporterEndpoint
+}
+
+// ResolveOtelServiceName applies the same env-then-file precedence to the
+// OpenTelemetry service name attribute. Falls back to
+// defaultOtelServiceName when neither tier sets a non-blank value.
+func ResolveOtelServiceName(getenv func(string) string, s Settings) string {
+	if v := getenv("NOTIFY_OTEL_SERVICE_NAME"); !isBlank(v) {
+		return v
+	}
+	if isBlank(s.OtelServiceName) {
+		return defaultOtelServiceName
+	}
+	return s.OtelServiceName
 }

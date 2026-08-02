@@ -58,4 +58,13 @@ internal static partial class Log
     /// <c>nats://user:password@host:4222</c>) and must never reach this log verbatim.</summary>
     [LoggerMessage(EventId = 14, Level = LogLevel.Information, Message = "Startup configuration resolved: NATS = {NatsUrl}, subject template = {SubjectTemplate}.")]
     public static partial void StartupConfigurationResolved(this ILogger logger, string natsUrl, string subjectTemplate);
+
+    [LoggerMessage(EventId = 15, Level = LogLevel.Warning, Message = "OpenTelemetry metrics setup failed; falling back to no-op metrics.")]
+    public static partial void OtelSetupFailed(this ILogger logger, Exception exception);
+
+    [LoggerMessage(EventId = 16, Level = LogLevel.Warning, Message = "otelEnabled is true but no exporter endpoint is configured; falling back to no-op metrics.")]
+    public static partial void OtelEnabledWithoutEndpoint(this ILogger logger);
+
+    [LoggerMessage(EventId = 17, Level = LogLevel.Warning, Message = "OpenTelemetry metrics shutdown/flush failed.")]
+    public static partial void OtelShutdownFailed(this ILogger logger, Exception exception);
 }

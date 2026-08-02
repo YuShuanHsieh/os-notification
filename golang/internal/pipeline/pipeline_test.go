@@ -125,7 +125,7 @@ func runAndWaitStop(t *testing.T, p *pipeline.Pipeline) (ctx context.Context, st
 
 func TestValidPayloadTriggersOnObservedOnceWithParsedEvent(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, nil)
 
 	_, stop := runAndWaitStop(t, p)
 	defer stop()
@@ -166,7 +166,7 @@ func TestValidPayloadTriggersOnObservedOnceWithParsedEvent(t *testing.T) {
 
 func TestInvalidPayloadNeverTriggersOnObservedAndWorkerSurvives(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, nil)
 
 	_, stop := runAndWaitStop(t, p)
 	defer stop()
@@ -190,7 +190,7 @@ func TestInvalidPayloadNeverTriggersOnObservedAndWorkerSurvives(t *testing.T) {
 
 func TestDuplicateDeduplicationKeyTriggersOnObservedOnce(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, nil)
 
 	_, stop := runAndWaitStop(t, p)
 	defer stop()
@@ -211,7 +211,7 @@ func TestDuplicateDeduplicationKeyTriggersOnObservedOnce(t *testing.T) {
 
 func TestTryEnqueueRejectsWhenQueueFullWithoutRun(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 2, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
+	p := pipeline.New(pipeline.Options{QueueCapacity: 2, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, nil)
 
 	// Run is never started, so nothing drains the intake queue.
 	if !p.TryEnqueue(criticalPayload("e1")) {
@@ -247,7 +247,7 @@ func TestTryEnqueueRejectsWhenQueueFullWithoutRun(t *testing.T) {
 func TestQueueFullWarningIsRateLimited(t *testing.T) {
 	clk := clock.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 1}, newDedupCache(), rec.onObserved, clk)
+	p := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 1}, newDedupCache(), rec.onObserved, clk, nil)
 
 	logs := captureLogs(t)
 
@@ -285,7 +285,7 @@ func TestQueueFullWarningIsRateLimited(t *testing.T) {
 
 func TestRunReturnsPromptlyOnContextCancelWithoutLeakingGoroutines(t *testing.T) {
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{})
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -312,7 +312,7 @@ func TestRunReturnsPromptlyOnContextCancelWithoutLeakingGoroutines(t *testing.T)
 func TestTryEnqueueStampsAgentReceivedAtAtIntakeNotAtWorkerProcessingTime(t *testing.T) {
 	clk := clock.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	rec := &recorder{}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 1}, newDedupCache(), rec.onObserved, clk)
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 1}, newDedupCache(), rec.onObserved, clk, nil)
 
 	t0 := clk.Now()
 	if !p.TryEnqueue(criticalPayload("evt-early")) {
@@ -356,6 +356,97 @@ func TestTryEnqueueStampsAgentReceivedAtAtIntakeNotAtWorkerProcessingTime(t *tes
 // proves the panic-containment fix: a poisoned callback that panics on one
 // event must not crash the worker goroutine, and a following, unrelated
 // event must still be processed normally afterwards.
+// TestQueueFullInvokesOnDroppedCallbackOncePerDrop proves TryEnqueue calls
+// the optional OnDropped callback exactly once per queue-full drop -- the
+// hook internal/host wires to its metrics recorder (RecordEventDropped
+// ("queue_full")) -- alongside (not instead of) the existing
+// DroppedQueueFull counter.
+func TestQueueFullInvokesOnDroppedCallbackOncePerDrop(t *testing.T) {
+	var mu sync.Mutex
+	var droppedCalls int
+	onDropped := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		droppedCalls++
+	}
+
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, onDropped)
+
+	// Run is never started, so nothing drains the intake queue -- both
+	// TryEnqueue calls after the first are guaranteed to hit the full path.
+	if !p.TryEnqueue(criticalPayload("e1")) {
+		t.Fatal("1st TryEnqueue: got false, want true (within capacity)")
+	}
+	if p.TryEnqueue(criticalPayload("e2")) {
+		t.Fatal("2nd TryEnqueue: got true, want false (queue full)")
+	}
+	if p.TryEnqueue(criticalPayload("e3")) {
+		t.Fatal("3rd TryEnqueue: got true, want false (queue full)")
+	}
+
+	mu.Lock()
+	got := droppedCalls
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("OnDropped invoked %d times, want 2 (one per queue-full drop)", got)
+	}
+	if want := p.DroppedQueueFull(); uint64(got) != want {
+		t.Fatalf("OnDropped call count = %d, want to match DroppedQueueFull() = %d", got, want)
+	}
+}
+
+// TestNilOnDroppedIsSafeToOmit proves passing nil for onDropped (matching
+// every existing call site in this test file, and the production default
+// when no metrics recorder is configured) does not panic on a queue-full
+// drop.
+func TestNilOnDroppedIsSafeToOmit(t *testing.T) {
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, nil)
+
+	if !p.TryEnqueue(criticalPayload("e1")) {
+		t.Fatal("1st TryEnqueue: got false, want true (within capacity)")
+	}
+	if p.TryEnqueue(criticalPayload("e2")) {
+		t.Fatal("2nd TryEnqueue: got true, want false (queue full)")
+	}
+}
+
+// TestPanickingOnDroppedCallbackDoesNotCrashTryEnqueue proves the
+// panic-containment fix applies to OnDropped too: a poisoned callback that
+// panics must not propagate out of TryEnqueue (in production, TryEnqueue is
+// called directly from the NATS message-dispatch goroutine, with no
+// recover of its own at that call site) -- this is the explicit,
+// user-mandated "metrics-recording code must never crash the application"
+// requirement, exercised at the pipeline layer.
+func TestPanickingOnDroppedCallbackDoesNotCrashTryEnqueue(t *testing.T) {
+	onDropped := func() { panic("boom: simulated onDropped panic") }
+
+	rec := &recorder{}
+	p := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 2}, newDedupCache(), rec.onObserved, clock.RealClock{}, onDropped)
+
+	if !p.TryEnqueue(criticalPayload("e1")) {
+		t.Fatal("1st TryEnqueue: got false, want true (within capacity)")
+	}
+	// This call's onDropped panics -- proving it doesn't crash the test
+	// process/goroutine is the entire point; the return value and counter
+	// must still be correct despite the contained panic.
+	if p.TryEnqueue(criticalPayload("e2")) {
+		t.Fatal("2nd TryEnqueue: got true, want false (queue full)")
+	}
+	if got := p.DroppedQueueFull(); got != 1 {
+		t.Fatalf("DroppedQueueFull() = %d, want 1 (still counted despite the panicking callback)", got)
+	}
+
+	// A subsequent, unrelated call must also survive and behave normally.
+	if p.TryEnqueue(criticalPayload("e3")) {
+		t.Fatal("3rd TryEnqueue: got true, want false (queue still full)")
+	}
+	if got := p.DroppedQueueFull(); got != 2 {
+		t.Fatalf("DroppedQueueFull() = %d, want 2", got)
+	}
+}
+
 func TestPanickingOnObservedDoesNotCrashWorkerAndSubsequentEventsStillProcess(t *testing.T) {
 	rec := &recorder{}
 	onObserved := func(evt *model.InboundNotification) {
@@ -364,7 +455,7 @@ func TestPanickingOnObservedDoesNotCrashWorkerAndSubsequentEventsStillProcess(t 
 		}
 		rec.onObserved(evt)
 	}
-	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), onObserved, clock.RealClock{})
+	p := pipeline.New(pipeline.Options{QueueCapacity: 500, WorkerCount: 2}, newDedupCache(), onObserved, clock.RealClock{}, nil)
 
 	_, stop := runAndWaitStop(t, p)
 	defer stop()

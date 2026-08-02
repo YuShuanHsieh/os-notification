@@ -6,29 +6,49 @@ namespace NotificationAgent.Windows.Tests;
 
 public partial class WindowsUsernameIdentityProviderTests
 {
-    [GeneratedRegex("^u_[a-z0-9_-]*_[0-9a-f]{8}$")]
+    [GeneratedRegex("^[a-z0-9_-]+$")]
     private static partial Regex UserIdShapeRegex();
 
     [Fact]
-    public async Task GetIdentityAsync_resolves_to_u_prefixed_lowercased_username()
+    public async Task GetIdentityAsync_resolves_to_lowercased_username()
     {
         var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => "JDoe");
 
         var identity = await provider.GetIdentityAsync();
 
-        Assert.StartsWith("u_jdoe_", identity.UserId);
-        Assert.Matches(UserIdShapeRegex(), identity.UserId);
+        Assert.Equal("jdoe", identity.UserId);
     }
 
     [Fact]
-    public async Task GetIdentityAsync_strips_a_domain_prefix_if_present()
+    public async Task GetIdentityAsync_drops_a_domain_prefix_if_present()
     {
-        var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CONTOSO\JDoe");
+        // Deployments using this provider are expected to guarantee account-name uniqueness
+        // themselves, so the domain/machine qualifier is discarded rather than folded into
+        // the identity.
+        var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CORP\JDoe");
 
         var identity = await provider.GetIdentityAsync();
 
-        Assert.StartsWith("u_jdoe_", identity.UserId);
-        Assert.Matches(UserIdShapeRegex(), identity.UserId);
+        Assert.Equal("jdoe", identity.UserId);
+    }
+
+    [Fact]
+    public async Task GetIdentityAsync_domain_qualified_and_bare_usernames_collapse_to_the_same_id()
+    {
+        // Documents the deliberate behavior: with the domain qualifier dropped,
+        // identically-named accounts in different domains (and their bare equivalent) all
+        // resolve to the same identity.
+        var providerA = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CORP\jdoe");
+        var providerB = new WindowsUsernameIdentityProvider(getRawUsername: () => @"CONTOSO\jdoe");
+        var providerC = new WindowsUsernameIdentityProvider(getRawUsername: () => "jdoe");
+
+        var identityA = await providerA.GetIdentityAsync();
+        var identityB = await providerB.GetIdentityAsync();
+        var identityC = await providerC.GetIdentityAsync();
+
+        Assert.Equal("jdoe", identityA.UserId);
+        Assert.Equal("jdoe", identityB.UserId);
+        Assert.Equal("jdoe", identityC.UserId);
     }
 
     [Theory]
@@ -37,7 +57,7 @@ public partial class WindowsUsernameIdentityProviderTests
     [InlineData("user*name", "user_name")]
     [InlineData("user>name", "user_name")]
     public async Task GetIdentityAsync_sanitizes_unsafe_characters_instead_of_rejecting(
-        string rawUsername, string expectedPrefix)
+        string rawUsername, string expected)
     {
         // The confirmed-exploitable case ("John Doe") in particular: an unsanitized interior
         // space would let the id split a NATS `SUB <subject> [queue-group] <sid>` line into
@@ -46,8 +66,7 @@ public partial class WindowsUsernameIdentityProviderTests
 
         var identity = await provider.GetIdentityAsync();
 
-        Assert.StartsWith($"u_{expectedPrefix}_", identity.UserId);
-        Assert.Matches(UserIdShapeRegex(), identity.UserId);
+        Assert.Equal(expected, identity.UserId);
     }
 
     [Fact]
@@ -64,10 +83,8 @@ public partial class WindowsUsernameIdentityProviderTests
     public async Task GetIdentityAsync_still_resolves_when_sanitization_leaves_no_usable_characters(
         string unsafeUsername)
     {
-        // The previous review round rejected this case outright ("no usable characters for
-        // identity"), but that's no longer necessary: the hash suffix alone guarantees a
-        // non-empty, effectively-unique user id regardless of how degenerate the sanitized
-        // prefix is, so a username like "***" must now resolve rather than throw.
+        // sanitize replaces rather than strips characters, so an all-punctuation username
+        // still resolves rather than throwing.
         var provider = new WindowsUsernameIdentityProvider(getRawUsername: () => unsafeUsername);
 
         var identity = await provider.GetIdentityAsync();
@@ -84,23 +101,6 @@ public partial class WindowsUsernameIdentityProviderTests
         var second = await provider.GetIdentityAsync();
 
         Assert.Equal(first.UserId, second.UserId);
-    }
-
-    [Fact]
-    public async Task GetIdentityAsync_does_not_collide_two_different_usernames_that_sanitize_identically()
-    {
-        // The actual bug being fixed: "user.name" and "user_name" both sanitize to the same
-        // allowlisted string ("user_name"), so without a hash suffix these two genuinely
-        // different Windows accounts would collide onto one identity/NATS subject.
-        var providerA = new WindowsUsernameIdentityProvider(getRawUsername: () => "user.name");
-        var providerB = new WindowsUsernameIdentityProvider(getRawUsername: () => "user_name");
-
-        var identityA = await providerA.GetIdentityAsync();
-        var identityB = await providerB.GetIdentityAsync();
-
-        Assert.StartsWith("u_user_name_", identityA.UserId);
-        Assert.StartsWith("u_user_name_", identityB.UserId);
-        Assert.NotEqual(identityA.UserId, identityB.UserId);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using NotificationAgent.Core.Models;
 using NotificationAgent.Core.Rendering;
+using NotificationAgent.Core.Telemetry;
 
 namespace NotificationAgent.Core.Aggregation;
 
@@ -31,15 +32,21 @@ public sealed class Aggregator : IAsyncDisposable
     private readonly AggregatorOptions _options;
     private readonly TimeProvider _time;
     private readonly Func<ToastRequest, ValueTask> _renderAsync;
+    private readonly IAgentMetrics _metrics;
     private long _droppedBucketOverflow;
 
     public long DroppedBucketOverflow => Interlocked.Read(ref _droppedBucketOverflow);
 
-    public Aggregator(AggregatorOptions options, TimeProvider time, Func<ToastRequest, ValueTask> renderAsync)
+    public Aggregator(
+        AggregatorOptions options,
+        TimeProvider time,
+        Func<ToastRequest, ValueTask> renderAsync,
+        IAgentMetrics? metrics = null)
     {
         _options = options;
         _time = time;
         _renderAsync = renderAsync;
+        _metrics = metrics ?? NullAgentMetrics.Instance;
     }
 
     public async ValueTask AddAsync(InboundNotification n)
@@ -50,6 +57,7 @@ public sealed class Aggregator : IAsyncDisposable
             return;
         }
 
+        var droppedByOverflow = false;
         lock (_gate)
         {
             var key = (n.AggregationKey, n.Priority);
@@ -58,22 +66,36 @@ public sealed class Aggregator : IAsyncDisposable
                 if (_buckets.Count >= _options.MaxBuckets)
                 {
                     Interlocked.Increment(ref _droppedBucketOverflow);
-                    return;
+                    droppedByOverflow = true;
+                }
+                else
+                {
+                    bucket = new Bucket();
+                    _buckets[key] = bucket;
+                    var window = n.Priority == EventPriority.Important
+                        ? _options.ImportantWindow : _options.NormalWindow;
+                    bucket.Timer = _time.CreateTimer(_ => Flush(key), null, window, Timeout.InfiniteTimeSpan);
+                }
+            }
+
+            if (!droppedByOverflow)
+            {
+                if (n.Replaceable)
+                {
+                    bucket!.Events.Clear();
                 }
 
-                bucket = new Bucket();
-                _buckets[key] = bucket;
-                var window = n.Priority == EventPriority.Important
-                    ? _options.ImportantWindow : _options.NormalWindow;
-                bucket.Timer = _time.CreateTimer(_ => Flush(key), null, window, Timeout.InfiniteTimeSpan);
+                bucket!.Events.Add(n);
             }
+        }
 
-            if (n.Replaceable)
-            {
-                bucket.Events.Clear();
-            }
-
-            bucket.Events.Add(n);
+        // Recorded outside _gate: an injected IAgentMetrics is external (real-world
+        // implementation lives in the Windows head), and this matches the Go aggregator's
+        // ordering (unlock first, then call the drop callback) -- holding the lock here would
+        // needlessly serialize every drop behind whatever the metrics call does.
+        if (droppedByOverflow)
+        {
+            _metrics.SafeRecordEventDropped("bucket_overflow");
         }
     }
 

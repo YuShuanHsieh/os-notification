@@ -3,7 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use notify_agent_core::host::{AgentConfig, AgentHost};
-use notify_agent_core::identity::{default_device_id, DeviceCodeIdentity, EnvIdentity, IdentityProvider};
+use notify_agent_core::identity::{
+    default_device_id, DeviceCodeIdentity, EnvIdentity, IdentityProvider,
+};
 use notify_agent_core::nats_auth::{CredsFileAuth, NatsAuthProvider};
 use notify_agent_core::toast::{ToastRenderer, ToastRequest};
 
@@ -46,8 +48,12 @@ async fn main() -> anyhow::Result<()> {
     let identity: Arc<dyn IdentityProvider> = match std::env::var("NOTIFY_AAD_CLIENT_ID") {
         Ok(client_id) if !client_id.trim().is_empty() => Arc::new(DeviceCodeIdentity {
             client_id,
-            tenant: std::env::var("NOTIFY_AAD_TENANT_ID").unwrap_or_else(|_| "organizations".into()),
-            device_id: std::env::var("NOTIFY_DEVICE_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(default_device_id),
+            tenant: std::env::var("NOTIFY_AAD_TENANT_ID")
+                .unwrap_or_else(|_| "organizations".into()),
+            device_id: std::env::var("NOTIFY_DEVICE_ID")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(default_device_id),
             renderer: renderer.clone(),
             extra_scopes: Vec::new(),
             refresh_token_sink: None,
@@ -55,22 +61,29 @@ async fn main() -> anyhow::Result<()> {
         _ => Arc::new(EnvIdentity),
     };
 
-    let auth_provider: Option<Arc<dyn NatsAuthProvider>> = match std::env::var("NOTIFY_NATS_CREDS_FILE")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-    {
-        Some(path) => {
-            tracing::debug!(path = %path, "nats auth: mode = creds-file");
-            Some(Arc::new(CredsFileAuth { path }) as Arc<dyn NatsAuthProvider>)
-        }
-        None => {
-            tracing::debug!("nats auth: mode = none (unauthenticated)");
-            None
-        }
-    };
+    let auth_provider: Option<Arc<dyn NatsAuthProvider>> =
+        match std::env::var("NOTIFY_NATS_CREDS_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(path) => {
+                tracing::debug!(path = %path, "nats auth: mode = creds-file");
+                Some(Arc::new(CredsFileAuth { path }) as Arc<dyn NatsAuthProvider>)
+            }
+            None => {
+                tracing::debug!("nats auth: mode = none (unauthenticated)");
+                None
+            }
+        };
 
-    let host = AgentHost::start(config, identity, renderer, auth_provider).await?;
-    println!("Agent subscribed to {} on {}. Ctrl+C to exit.", host.subject(), nats_url);
+    // Console head never configures metrics (feature: OTel metrics is
+    // Windows-only) — AgentHost defaults to a no-op AgentMetrics.
+    let host = AgentHost::start(config, identity, renderer, auth_provider, None).await?;
+    println!(
+        "Agent subscribed to {} on {}. Ctrl+C to exit.",
+        host.subject(),
+        nats_url
+    );
 
     tokio::signal::ctrl_c().await?;
     println!("Shutting down.");

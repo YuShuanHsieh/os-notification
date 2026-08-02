@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -7,9 +7,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
-use crate::ack::{AckPayload, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS, TelemetryPublisher};
+use crate::ack::{AckPayload, TelemetryPublisher, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS};
 use crate::aggregator::{Aggregator, AggregatorConfig, RenderSink};
 use crate::dedup::DedupCache;
+use crate::metrics::AgentMetrics;
 use crate::parser;
 use crate::toast::{ToastRenderer, ToastRequest};
 
@@ -44,6 +45,7 @@ impl Default for PipelineConfig {
 pub struct Pipeline {
     tx: mpsc::Sender<ReceivedEvent>,
     dropped_queue_full: Arc<AtomicU64>,
+    metrics: Arc<dyn AgentMetrics>,
     _rx: Arc<tokio::sync::Mutex<mpsc::Receiver<ReceivedEvent>>>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -55,6 +57,7 @@ impl Pipeline {
         aggregator: Aggregator,
         telemetry: Arc<dyn TelemetryPublisher>,
         device_id: String,
+        metrics: Arc<dyn AgentMetrics>,
     ) -> Self {
         let (tx, rx) = mpsc::channel::<ReceivedEvent>(config.queue_capacity);
         let rx = Arc::new(tokio::sync::Mutex::new(rx));
@@ -65,13 +68,22 @@ impl Pipeline {
                 let aggregator = aggregator.clone();
                 let telemetry = telemetry.clone();
                 let device_id = device_id.clone();
+                let metrics = metrics.clone();
                 tokio::spawn(async move {
                     loop {
                         // Lock only to receive, never while processing, so the
                         // two workers process concurrently.
                         let evt = { rx.lock().await.recv().await };
                         let Some(evt) = evt else { break }; // closed + drained
-                        process(evt, &dedup, &aggregator, telemetry.as_ref(), &device_id).await;
+                        process(
+                            evt,
+                            &dedup,
+                            &aggregator,
+                            telemetry.as_ref(),
+                            &device_id,
+                            metrics.as_ref(),
+                        )
+                        .await;
                     }
                 })
             })
@@ -79,6 +91,7 @@ impl Pipeline {
         Self {
             tx,
             dropped_queue_full: Arc::new(AtomicU64::new(0)),
+            metrics,
             _rx: rx,
             workers,
         }
@@ -93,6 +106,7 @@ impl Pipeline {
                     dropped_queue_full = dropped,
                     "dropping event because the intake queue is full"
                 );
+                self.metrics.record_event_dropped("queue_full");
                 false
             }
         }
@@ -106,6 +120,7 @@ impl Pipeline {
         IntakeHandle {
             tx: self.tx.clone(),
             dropped_queue_full: self.dropped_queue_full.clone(),
+            metrics: self.metrics.clone(),
         }
     }
 
@@ -125,6 +140,7 @@ impl Pipeline {
 pub struct IntakeHandle {
     tx: mpsc::Sender<ReceivedEvent>,
     dropped_queue_full: Arc<AtomicU64>,
+    metrics: Arc<dyn AgentMetrics>,
 }
 
 impl IntakeHandle {
@@ -137,6 +153,7 @@ impl IntakeHandle {
                     dropped_queue_full = dropped,
                     "dropping event because the intake queue is full"
                 );
+                self.metrics.record_event_dropped("queue_full");
                 false
             }
         }
@@ -149,6 +166,7 @@ async fn process(
     aggregator: &Aggregator,
     telemetry: &dyn TelemetryPublisher,
     device_id: &str,
+    metrics: &dyn AgentMetrics,
 ) {
     let n = match parser::parse_event(&evt.payload, evt.received_at, evt.seq) {
         Ok(n) => n,
@@ -168,6 +186,7 @@ async fn process(
         status: OBSERVED_BY_AGENT.into(),
     };
     publish_ack(telemetry, &ack, "observed").await;
+    metrics.record_event_received();
     aggregator.add(n);
 }
 
@@ -177,6 +196,7 @@ pub struct AckingRenderSink {
     pub renderer: Arc<dyn ToastRenderer>,
     pub telemetry: Arc<dyn TelemetryPublisher>,
     pub device_id: String,
+    pub metrics: Arc<dyn AgentMetrics>,
 }
 
 #[async_trait]
@@ -202,6 +222,13 @@ impl RenderSink for AckingRenderSink {
                 status: SUBMITTED_TO_WINDOWS.into(),
             };
             publish_ack(self.telemetry.as_ref(), &ack, "submitted").await;
+            // Per-event agent processing latency (design: OTel metrics): this
+            // event's own received_at, not one value shared across the whole
+            // batch — a batched toast covers events with different arrival
+            // times, so this must be computed per source here rather than
+            // once outside the loop.
+            let seconds = (submitted_at - source.received_at).as_seconds_f64();
+            self.metrics.record_render_duration(seconds);
         }
     }
 }
@@ -226,19 +253,22 @@ pub fn build_agent(
     renderer: Arc<dyn ToastRenderer>,
     telemetry: Arc<dyn TelemetryPublisher>,
     device_id: String,
+    metrics: Arc<dyn AgentMetrics>,
 ) -> (Pipeline, Aggregator) {
     let sink = Arc::new(AckingRenderSink {
         renderer,
         telemetry: telemetry.clone(),
         device_id: device_id.clone(),
+        metrics: metrics.clone(),
     });
-    let aggregator = Aggregator::new(aggregator_config, sink);
+    let aggregator = Aggregator::new(aggregator_config, sink, metrics.clone());
     let pipeline = Pipeline::start(
         pipeline_config,
         dedup,
         aggregator.clone(),
         telemetry,
         device_id,
+        metrics,
     );
     (pipeline, aggregator)
 }
@@ -246,7 +276,7 @@ pub fn build_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ack::{AckPayload, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS, TelemetryPublisher};
+    use crate::ack::{AckPayload, TelemetryPublisher, OBSERVED_BY_AGENT, SUBMITTED_TO_WINDOWS};
     use crate::aggregator::AggregatorConfig;
     use crate::dedup::DedupCache;
     use crate::toast::{ToastRenderer, ToastRequest};
@@ -290,6 +320,36 @@ mod tests {
         }
     }
 
+    /// Records every `AgentMetrics` call as a plain string description, so
+    /// tests can assert which metric fired, with what argument, without
+    /// pulling in a real OTel implementation (that lives in
+    /// notify-agent-windows and is tested there instead).
+    #[derive(Default)]
+    struct RecordingMetrics {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl AgentMetrics for RecordingMetrics {
+        fn record_event_received(&self) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("event_received".to_string());
+        }
+        fn record_event_dropped(&self, reason: &str) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("event_dropped:{reason}"));
+        }
+        fn record_render_duration(&self, seconds: f64) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("render_duration:{seconds}"));
+        }
+    }
+
     fn received_at() -> DateTime<Utc> {
         "2026-07-15T08:30:00.190Z".parse().unwrap()
     }
@@ -315,9 +375,11 @@ mod tests {
         crate::aggregator::Aggregator,
         Arc<RecordingTelemetry>,
         Arc<RecordingRenderer>,
+        Arc<RecordingMetrics>,
     ) {
         let telemetry = Arc::new(RecordingTelemetry::default());
         let renderer = Arc::new(RecordingRenderer::default());
+        let metrics = Arc::new(RecordingMetrics::default());
         let (pipeline, aggregator) = build_agent(
             PipelineConfig {
                 queue_capacity,
@@ -328,8 +390,9 @@ mod tests {
             renderer.clone(),
             telemetry.clone(),
             "d-456".to_string(),
+            metrics.clone(),
         );
-        (pipeline, aggregator, telemetry, renderer)
+        (pipeline, aggregator, telemetry, renderer, metrics)
     }
 
     async fn wait_until(mut cond: impl FnMut() -> bool) {
@@ -344,7 +407,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn valid_critical_event_flows_to_renderer_with_both_acks() {
-        let (pipeline, aggregator, telemetry, renderer) = harness(500, 2);
+        let (pipeline, aggregator, telemetry, renderer, metrics) = harness(500, 2);
         assert!(pipeline.try_enqueue(critical_event(1, "evt-1")));
         wait_until(|| telemetry.acks.lock().unwrap().len() == 2).await;
 
@@ -362,13 +425,31 @@ mod tests {
         assert_eq!(submitted.toast_submitted_at, Some(renderer.submit_at));
         assert_eq!(submitted.agent_received_at, received_at());
 
+        // Metrics: one event_received (at the observed_by_agent point) and one
+        // render_duration sample, computed from this specific event's own
+        // received_at, not a batch-wide value.
+        let calls = metrics.calls.lock().unwrap().clone();
+        assert_eq!(calls.iter().filter(|c| *c == "event_received").count(), 1);
+        let expected_seconds = (renderer.submit_at - received_at()).as_seconds_f64();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.starts_with("render_duration:"))
+                .count(),
+            1
+        );
+        assert!(
+            calls.contains(&format!("render_duration:{expected_seconds}")),
+            "calls was {calls:?}"
+        );
+
         pipeline.shutdown().await;
         aggregator.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn duplicate_events_are_processed_once() {
-        let (pipeline, aggregator, telemetry, renderer) = harness(500, 2);
+        let (pipeline, aggregator, telemetry, renderer, metrics) = harness(500, 2);
         for seq in 1..=3 {
             pipeline.try_enqueue(critical_event(seq, "evt-dup"));
         }
@@ -377,13 +458,24 @@ mod tests {
 
         assert_eq!(renderer.shown.lock().unwrap().len(), 1);
         assert_eq!(telemetry.acks.lock().unwrap().len(), 2); // one observed + one submitted
+                                                             // Deduped duplicates never reach `process`'s record_event_received call.
+        assert_eq!(
+            metrics
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == "event_received")
+                .count(),
+            1
+        );
         pipeline.shutdown().await;
         aggregator.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn invalid_payloads_are_dropped_silently() {
-        let (pipeline, aggregator, telemetry, renderer) = harness(500, 2);
+        let (pipeline, aggregator, telemetry, renderer, metrics) = harness(500, 2);
         pipeline.try_enqueue(ReceivedEvent {
             payload: b"garbage".to_vec(),
             received_at: received_at(),
@@ -393,13 +485,22 @@ mod tests {
         wait_until(|| telemetry.acks.lock().unwrap().len() == 2).await;
 
         assert_eq!(renderer.shown.lock().unwrap().len(), 1);
-        assert!(
-            telemetry
-                .acks
+        assert!(telemetry
+            .acks
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|a| a.event_id == "evt-ok"));
+        // The unparseable payload never reaches record_event_received.
+        assert_eq!(
+            metrics
+                .calls
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|a| a.event_id == "evt-ok")
+                .filter(|c| *c == "event_received")
+                .count(),
+            1
         );
         pipeline.shutdown().await;
         aggregator.shutdown().await;
@@ -408,10 +509,14 @@ mod tests {
     #[tokio::test]
     async fn try_enqueue_reports_drop_when_queue_full() {
         // workers: 0 → nothing drains the channel.
-        let (pipeline, _aggregator, _telemetry, _renderer) = harness(2, 0);
+        let (pipeline, _aggregator, _telemetry, _renderer, metrics) = harness(2, 0);
         assert!(pipeline.try_enqueue(critical_event(1, "e1")));
         assert!(pipeline.try_enqueue(critical_event(2, "e2")));
         assert!(!pipeline.try_enqueue(critical_event(3, "e3")));
         assert_eq!(pipeline.dropped_queue_full(), 1);
+        assert_eq!(
+            metrics.calls.lock().unwrap().as_slice(),
+            &["event_dropped:queue_full".to_string()]
+        );
     }
 }

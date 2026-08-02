@@ -49,7 +49,11 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	h, err := host.Start(ctx, opts, identity.EnvIdentity{}, ConsoleRenderer{}, authProvider)
+	// nil metrics: the console head never configures OpenTelemetry (or any
+	// go.opentelemetry.io/otel* package at all -- see internal/metrics's
+	// package doc); Start defaults a nil AgentMetrics to
+	// metrics.NullAgentMetrics{} internally.
+	h, err := host.Start(ctx, opts, identity.EnvIdentity{}, ConsoleRenderer{}, authProvider, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

@@ -90,7 +90,7 @@ func defaultOpts() aggregator.Options {
 func TestCriticalRendersImmediatelyWithoutClockAdvance(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("e1", model.PriorityCritical, "agg.key", false, "m"))
 
@@ -105,7 +105,7 @@ func TestCriticalRendersImmediatelyWithoutClockAdvance(t *testing.T) {
 func TestLoneNormalEventRendersOnlyAfter10sWindow(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("e1", model.PriorityNormal, "agg.key", false, "m"))
 
@@ -126,7 +126,7 @@ func TestLoneNormalEventRendersOnlyAfter10sWindow(t *testing.T) {
 func TestLoneImportantEventRendersOnlyAfter2sWindow(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("i1", model.PriorityImportant, "imp", false, "m"))
 
@@ -144,7 +144,7 @@ func TestLoneImportantEventRendersOnlyAfter2sWindow(t *testing.T) {
 func TestNonReplaceableEventsInSameBucketAllBatchIntoOneRender(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("e1", model.PriorityNormal, "agg.key", false, "m"))
 	agg.Add(event("e2", model.PriorityNormal, "agg.key", false, "m"))
@@ -174,7 +174,7 @@ func TestNonReplaceableEventsInSameBucketAllBatchIntoOneRender(t *testing.T) {
 func TestReplaceableBucketCollapsesToOnlyTheLatestEvent(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	// The "progress" pattern: 10% -> 60% -> 90%, all replaceable, same key.
 	agg.Add(event("p1", model.PriorityNormal, "prog", true, "10%"))
@@ -198,7 +198,7 @@ func TestReplaceableBucketCollapsesToOnlyTheLatestEvent(t *testing.T) {
 func TestDifferentAggregationKeysDoNotShareABucket(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("a1", model.PriorityNormal, "a", false, "m"))
 	agg.Add(event("b1", model.PriorityNormal, "b", false, "m"))
@@ -218,7 +218,7 @@ func TestDifferentAggregationKeysDoNotShareABucket(t *testing.T) {
 func TestDifferentPrioritiesDoNotShareABucketEvenWithSameKey(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("i1", model.PriorityImportant, "shared", false, "m"))
 	agg.Add(event("n1", model.PriorityNormal, "shared", false, "m"))
@@ -245,7 +245,7 @@ func TestExceedingMaxBucketsDropsTheOverflowEventInsteadOfPanickingOrGrowing(t *
 	rec := &recorder{}
 	opts := defaultOpts()
 	opts.MaxBuckets = 2
-	agg := aggregator.New(opts, clk, rec.render)
+	agg := aggregator.New(opts, clk, rec.render, nil)
 
 	agg.Add(event("a1", model.PriorityNormal, "a", false, "m"))
 	agg.Add(event("b1", model.PriorityNormal, "b", false, "m"))
@@ -288,7 +288,7 @@ func TestBucketOverflowWarningIsRateLimited(t *testing.T) {
 	// still over cap after the advance, not the bucket count changing out
 	// from under it.
 	opts.NormalWindow = time.Hour
-	agg := aggregator.New(opts, clk, rec.render)
+	agg := aggregator.New(opts, clk, rec.render, nil)
 
 	logs := captureLogs(t)
 
@@ -325,7 +325,7 @@ func TestBucketOverflowWarningIsRateLimited(t *testing.T) {
 func TestFlushRendersPendingBucketsImmediatelyWithoutClockAdvance(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("e1", model.PriorityNormal, "agg.key", false, "m"))
 	agg.Add(event("i1", model.PriorityImportant, "imp.key", false, "m"))
@@ -340,7 +340,7 @@ func TestFlushRendersPendingBucketsImmediatelyWithoutClockAdvance(t *testing.T) 
 func TestFlushClearsBucketsSoTheOriginalWindowLaterDoesNotDoubleRender(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Add(event("e1", model.PriorityNormal, "agg.key", false, "m"))
 	agg.Flush()
@@ -372,7 +372,7 @@ func TestPanickingRenderDoesNotCrashAndSubsequentBatchesStillRender(t *testing.T
 		}
 		rec.render(batch)
 	}
-	agg := aggregator.New(defaultOpts(), clk, render)
+	agg := aggregator.New(defaultOpts(), clk, render, nil)
 
 	// Critical events render synchronously on the caller's (this test's)
 	// goroutine -- the most direct way to prove Add() itself survives a
@@ -406,10 +406,80 @@ func TestPanickingRenderDoesNotCrashAndSubsequentBatchesStillRender(t *testing.T
 	}
 }
 
+// TestBucketOverflowInvokesOnDroppedCallbackOncePerDrop proves Add calls the
+// optional OnDropped callback exactly once per bucket-overflow drop -- the
+// hook internal/host wires to its metrics recorder (RecordEventDropped
+// ("bucket_overflow")) -- alongside (not instead of) the existing
+// DroppedBucketOverflow counter.
+func TestBucketOverflowInvokesOnDroppedCallbackOncePerDrop(t *testing.T) {
+	clk := clock.NewFakeClock(epoch)
+	rec := &recorder{}
+	opts := defaultOpts()
+	opts.MaxBuckets = 1
+
+	var mu sync.Mutex
+	var droppedCalls int
+	onDropped := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		droppedCalls++
+	}
+	agg := aggregator.New(opts, clk, rec.render, onDropped)
+
+	agg.Add(event("a1", model.PriorityNormal, "a", false, "m")) // fills the single bucket
+	agg.Add(event("b1", model.PriorityNormal, "b", false, "m")) // over cap: dropped
+	agg.Add(event("c1", model.PriorityNormal, "c", false, "m")) // over cap: dropped
+
+	mu.Lock()
+	got := droppedCalls
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("OnDropped invoked %d times, want 2 (one per bucket-overflow drop)", got)
+	}
+	if want := agg.DroppedBucketOverflow(); uint64(got) != want {
+		t.Fatalf("OnDropped call count = %d, want to match DroppedBucketOverflow() = %d", got, want)
+	}
+}
+
+// TestPanickingOnDroppedCallbackDoesNotCrashAdd proves the panic-containment
+// fix applies to OnDropped too: a poisoned callback that panics must not
+// propagate out of Add -- this is the explicit, user-mandated
+// "metrics-recording code must never crash the application" requirement,
+// exercised at the aggregator layer.
+func TestPanickingOnDroppedCallbackDoesNotCrashAdd(t *testing.T) {
+	clk := clock.NewFakeClock(epoch)
+	rec := &recorder{}
+	opts := defaultOpts()
+	opts.MaxBuckets = 1
+	onDropped := func() { panic("boom: simulated onDropped panic") }
+	agg := aggregator.New(opts, clk, rec.render, onDropped)
+
+	agg.Add(event("a1", model.PriorityNormal, "a", false, "m")) // fills the single bucket
+	// This call's onDropped panics -- proving it doesn't crash the test
+	// process/goroutine is the entire point.
+	agg.Add(event("b1", model.PriorityNormal, "b", false, "m")) // over cap: dropped, panics contained
+
+	if got := agg.DroppedBucketOverflow(); got != 1 {
+		t.Fatalf("DroppedBucketOverflow() = %d, want 1 (still counted despite the panicking callback)", got)
+	}
+
+	// A subsequent, unrelated event for the surviving bucket's key must
+	// still batch and render normally afterwards.
+	agg.Add(event("a2", model.PriorityNormal, "a", false, "m"))
+	clk.Advance(10 * time.Second)
+
+	if len(rec.batches) != 1 {
+		t.Fatalf("want 1 render for bucket 'a', got %d", len(rec.batches))
+	}
+	if got := ids(rec.batches[0]); len(got) != 2 || got[0] != "a1" || got[1] != "a2" {
+		t.Fatalf("want batch [a1 a2] to render normally after the panicking drop, got %v", got)
+	}
+}
+
 func TestFlushOnEmptyAggregatorRendersNothing(t *testing.T) {
 	clk := clock.NewFakeClock(epoch)
 	rec := &recorder{}
-	agg := aggregator.New(defaultOpts(), clk, rec.render)
+	agg := aggregator.New(defaultOpts(), clk, rec.render, nil)
 
 	agg.Flush()
 

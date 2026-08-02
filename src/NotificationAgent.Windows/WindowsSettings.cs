@@ -60,6 +60,21 @@ public sealed class WindowsSettingsFile
     {
         get; init;
     }
+
+    public bool? OtelEnabled
+    {
+        get; init;
+    }
+
+    public string? OtelExporterEndpoint
+    {
+        get; init;
+    }
+
+    public string? OtelServiceName
+    {
+        get; init;
+    }
 }
 
 /// <summary>The fully resolved Windows head configuration: settings-file values layered
@@ -73,7 +88,10 @@ public sealed record ResolvedWindowsSettings(
     string? AadClientId,
     string AadTenantId,
     string? DeviceId,
-    LogLevel LogLevel);
+    LogLevel LogLevel,
+    bool OtelEnabled,
+    string? OtelExporterEndpoint,
+    string OtelServiceName);
 
 /// <summary>A diagnostic produced while loading/resolving the settings file, deferred until a
 /// real logger exists (feature: app settings file / logging). <see cref="LoadFile"/> and
@@ -184,7 +202,10 @@ public static class WindowsSettings
             AadClientId: PickOptional(getEnv("NOTIFY_AAD_CLIENT_ID"), file.AadClientId),
             AadTenantId: Pick(getEnv("NOTIFY_AAD_TENANT_ID"), file.AadTenantId, "organizations"),
             DeviceId: PickOptional(getEnv("NOTIFY_DEVICE_ID"), file.DeviceId),
-            LogLevel: logLevel);
+            LogLevel: logLevel,
+            OtelEnabled: PickBool(getEnv("NOTIFY_OTEL_ENABLED"), file.OtelEnabled, fallback: false),
+            OtelExporterEndpoint: PickOptional(getEnv("NOTIFY_OTEL_EXPORTER_ENDPOINT"), file.OtelExporterEndpoint),
+            OtelServiceName: Pick(getEnv("NOTIFY_OTEL_SERVICE_NAME"), file.OtelServiceName, "notify-agent-windows-csharp"));
     }
 
     // Trim before checking blankness (not after): a whitespace-only value must be treated as
@@ -203,5 +224,43 @@ public static class WindowsSettings
 
         var trimmedFile = fileValue?.Trim();
         return trimmedFile is { Length: > 0 } ? trimmedFile : null;
+    }
+
+    // Same env > file > default precedence as Pick/PickOptional, for a boolean-shaped
+    // field. An env var value that doesn't parse as a bool (or "1"/"0") is treated as unset
+    // -- same "never fail startup over a config typo" spirit as the log-level fallback --
+    // and falls through to the file value/default rather than throwing.
+    private static bool PickBool(string? env, bool? fileValue, bool fallback)
+    {
+        var trimmedEnv = env?.Trim();
+        if (trimmedEnv is { Length: > 0 } && TryParseBoolLike(trimmedEnv, out var parsedEnv))
+        {
+            return parsedEnv;
+        }
+
+        return fileValue ?? fallback;
+    }
+
+    private static bool TryParseBoolLike(string text, out bool value)
+    {
+        if (bool.TryParse(text, out value))
+        {
+            return true;
+        }
+
+        if (text == "1")
+        {
+            value = true;
+            return true;
+        }
+
+        if (text == "0")
+        {
+            value = false;
+            return true;
+        }
+
+        value = false;
+        return false;
     }
 }

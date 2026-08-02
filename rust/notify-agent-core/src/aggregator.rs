@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tokio_util::task::TaskTracker;
 
+use crate::metrics::AgentMetrics;
 use crate::model::{InboundNotification, Priority};
 use crate::toast::{self, ToastRequest};
 
@@ -48,6 +49,7 @@ struct Inner {
     sink: Arc<dyn RenderSink>,
     renders: TaskTracker,
     dropped_bucket_overflow: AtomicU64,
+    metrics: Arc<dyn AgentMetrics>,
 }
 
 /// Owns priority handling, batching, and latest-state replacement (ADR-007).
@@ -59,7 +61,11 @@ pub struct Aggregator {
 }
 
 impl Aggregator {
-    pub fn new(config: AggregatorConfig, sink: Arc<dyn RenderSink>) -> Self {
+    pub fn new(
+        config: AggregatorConfig,
+        sink: Arc<dyn RenderSink>,
+        metrics: Arc<dyn AgentMetrics>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 config,
@@ -67,6 +73,7 @@ impl Aggregator {
                 sink,
                 renders: TaskTracker::new(),
                 dropped_bucket_overflow: AtomicU64::new(0),
+                metrics,
             }),
         }
     }
@@ -98,10 +105,16 @@ impl Aggregator {
                 .dropped_bucket_overflow
                 .fetch_add(1, Ordering::Relaxed)
                 + 1;
+            // Release the lock before calling into a pluggable, external
+            // implementation: holding it here would poison the mutex (and
+            // wedge every future add()/shutdown() call) if that
+            // implementation ever panics, violating its own contract.
+            drop(buckets);
             tracing::warn!(
                 dropped_bucket_overflow = dropped,
                 "dropping event because the aggregation bucket limit is reached"
             );
+            self.inner.metrics.record_event_dropped("bucket_overflow");
             return;
         }
 
@@ -177,11 +190,42 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::NullAgentMetrics;
     use crate::model::Priority;
-    use crate::toast::{ToastRequest, tests::event};
+    use crate::toast::{tests::event, ToastRequest};
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
-    use tokio::time::{Duration, advance};
+    use tokio::time::{advance, Duration};
+
+    /// Records every `AgentMetrics` call, mirroring pipeline.rs's test fake of
+    /// the same name — kept local to each module's test suite rather than
+    /// shared, matching this file's existing preference for self-contained
+    /// test fixtures (e.g. `RecordingSink`/`SlowSink` above).
+    #[derive(Default)]
+    struct RecordingMetrics {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl AgentMetrics for RecordingMetrics {
+        fn record_event_received(&self) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("event_received".to_string());
+        }
+        fn record_event_dropped(&self, reason: &str) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("event_dropped:{reason}"));
+        }
+        fn record_render_duration(&self, seconds: f64) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("render_duration:{seconds}"));
+        }
+    }
 
     #[derive(Default)]
     struct RecordingSink {
@@ -234,7 +278,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn critical_renders_immediately() {
         let sink = Arc::new(RecordingSink::default());
-        let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            sink.clone(),
+            Arc::new(NullAgentMetrics),
+        );
         agg.add(prioritized(
             1,
             "e1",
@@ -252,7 +300,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn normal_events_batch_and_flush_after_10s() {
         let sink = Arc::new(RecordingSink::default());
-        let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            sink.clone(),
+            Arc::new(NullAgentMetrics),
+        );
         for (seq, id) in [(1, "e1"), (2, "e2"), (3, "e3")] {
             agg.add(prioritized(
                 seq,
@@ -279,7 +331,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn important_flushes_after_2s_normal_does_not() {
         let sink = Arc::new(RecordingSink::default());
-        let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            sink.clone(),
+            Arc::new(NullAgentMetrics),
+        );
         agg.add(prioritized(1, "i1", Priority::Important, "imp", false, "m"));
         agg.add(prioritized(2, "n1", Priority::Normal, "norm", false, "m"));
         settle().await;
@@ -298,7 +354,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn replaceable_keeps_highest_seq_even_when_stale_arrives_late() {
         let sink = Arc::new(RecordingSink::default());
-        let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            sink.clone(),
+            Arc::new(NullAgentMetrics),
+        );
         agg.add(prioritized(1, "p1", Priority::Normal, "prog", true, "10%"));
         agg.add(prioritized(3, "p3", Priority::Normal, "prog", true, "90%"));
         agg.add(prioritized(2, "p2", Priority::Normal, "prog", true, "60%")); // stale: lower seq arrives later
@@ -315,7 +375,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn separate_aggregation_keys_produce_separate_toasts() {
         let sink = Arc::new(RecordingSink::default());
-        let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            sink.clone(),
+            Arc::new(NullAgentMetrics),
+        );
         agg.add(prioritized(1, "a1", Priority::Normal, "a", false, "m"));
         agg.add(prioritized(2, "b1", Priority::Normal, "b", false, "m"));
         settle().await;
@@ -331,11 +395,16 @@ mod tests {
             max_buckets: 2,
             ..Default::default()
         };
-        let agg = Aggregator::new(config, sink.clone());
+        let metrics = Arc::new(RecordingMetrics::default());
+        let agg = Aggregator::new(config, sink.clone(), metrics.clone());
         agg.add(prioritized(1, "a1", Priority::Normal, "a", false, "m"));
         agg.add(prioritized(2, "b1", Priority::Normal, "b", false, "m"));
         agg.add(prioritized(3, "c1", Priority::Normal, "c", false, "m")); // over cap → dropped
         assert_eq!(agg.dropped_bucket_overflow(), 1);
+        assert_eq!(
+            metrics.calls.lock().unwrap().as_slice(),
+            &["event_dropped:bucket_overflow".to_string()]
+        );
         settle().await;
         advance(Duration::from_secs(10)).await;
         settle().await;
@@ -345,7 +414,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn shutdown_flushes_pending_buckets() {
         let sink = Arc::new(RecordingSink::default());
-        let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            sink.clone(),
+            Arc::new(NullAgentMetrics),
+        );
         agg.add(prioritized(
             1,
             "e1",
@@ -365,7 +438,11 @@ mod tests {
             delay: Duration::from_secs(1),
             rendered: Mutex::new(Vec::new()),
         });
-        let agg = Aggregator::new(AggregatorConfig::default(), sink.clone());
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            sink.clone(),
+            Arc::new(NullAgentMetrics),
+        );
         agg.add(prioritized(
             1,
             "e1",
@@ -388,7 +465,11 @@ mod tests {
                 std::future::pending::<()>().await;
             }
         }
-        let agg = Aggregator::new(AggregatorConfig::default(), Arc::new(HungSink));
+        let agg = Aggregator::new(
+            AggregatorConfig::default(),
+            Arc::new(HungSink),
+            Arc::new(NullAgentMetrics),
+        );
         agg.add(prioritized(
             1,
             "e1",

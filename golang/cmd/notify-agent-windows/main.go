@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -78,7 +79,15 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "notify-agent-windows: warning: %v\n", err)
 	}
 
-	app := &trayApp{settings: settings}
+	// InitMetrics is called after slog.SetDefault above (so any setup
+	// failure is logged through the properly-configured logger) and is
+	// itself infallible in effect: it never returns an error and always
+	// falls back to a no-op metrics.AgentMetrics on any problem (disabled,
+	// unconfigured, or a failed exporter/provider/instrument setup) --
+	// never a reason to abort startup.
+	agentMetrics, shutdownMetrics := InitMetrics(context.Background(), settings)
+
+	app := &trayApp{settings: settings, metrics: agentMetrics, shutdownMetrics: shutdownMetrics}
 	systray.Run(app.onReady, app.onExit)
 	return 0
 }

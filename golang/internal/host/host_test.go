@@ -17,6 +17,7 @@ import (
 	"github.com/YuShuanHsieh/os-notification/golang/internal/clock"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/dedup"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/identity"
+	"github.com/YuShuanHsieh/os-notification/golang/internal/metrics"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/model"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/pipeline"
 	"github.com/YuShuanHsieh/os-notification/golang/internal/toast"
@@ -77,6 +78,63 @@ func (r *recordingRenderer) Calls() []toast.ToastRequest {
 	out := make([]toast.ToastRequest, len(r.calls))
 	copy(out, r.calls)
 	return out
+}
+
+// recordingMetrics is an in-test metrics.AgentMetrics fake that records
+// every call (guarded by a mutex) so tests can assert exactly what fired,
+// with what arguments, without touching any real OpenTelemetry type.
+type recordingMetrics struct {
+	mu              sync.Mutex
+	receivedCount   int
+	droppedReasons  []string
+	renderDurations []float64
+}
+
+var _ metrics.AgentMetrics = (*recordingMetrics)(nil)
+
+func (m *recordingMetrics) RecordEventReceived() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.receivedCount++
+}
+
+func (m *recordingMetrics) RecordEventDropped(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.droppedReasons = append(m.droppedReasons, reason)
+}
+
+func (m *recordingMetrics) RecordRenderDuration(seconds float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.renderDurations = append(m.renderDurations, seconds)
+}
+
+func (m *recordingMetrics) snapshot() (received int, dropped []string, durations []float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dOut := make([]string, len(m.droppedReasons))
+	copy(dOut, m.droppedReasons)
+	rOut := make([]float64, len(m.renderDurations))
+	copy(rOut, m.renderDurations)
+	return m.receivedCount, dOut, rOut
+}
+
+// panickingMetrics is a metrics.AgentMetrics fake whose every method panics
+// unconditionally -- used to prove the safeRecord containment around every
+// AgentMetrics call site in host.go actually contains a panic instead of
+// letting it propagate, per this feature's explicit, user-mandated
+// "metrics-recording code must never crash the application" requirement.
+type panickingMetrics struct{}
+
+var _ metrics.AgentMetrics = panickingMetrics{}
+
+func (panickingMetrics) RecordEventReceived() { panic("boom: simulated RecordEventReceived panic") }
+func (panickingMetrics) RecordEventDropped(reason string) {
+	panic("boom: simulated RecordEventDropped panic")
+}
+func (panickingMetrics) RecordRenderDuration(seconds float64) {
+	panic("boom: simulated RecordRenderDuration panic")
 }
 
 // uniqueID returns a short random hex string so concurrent/successive test
@@ -208,7 +266,7 @@ func TestStartLiveNATSObserveRenderAck(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	h, err := Start(ctx, opts, idp, renderer, nil)
+	h, err := Start(ctx, opts, idp, renderer, nil, nil)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -311,7 +369,7 @@ func TestStartLiveNATSBatchAckFanout(t *testing.T) {
 	}
 	d.pipelineOptions = pipeline.Options{QueueCapacity: 500, WorkerCount: 2}
 
-	h, err := start(ctx, opts, idp, renderer, nil, d)
+	h, err := start(ctx, opts, idp, renderer, nil, nil, d)
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -418,7 +476,7 @@ func TestStartLiveNATSReplaceableBatchSurvivorAckHasItsOwnAgentReceivedAt(t *tes
 	}
 	d.pipelineOptions = pipeline.Options{QueueCapacity: 500, WorkerCount: 2}
 
-	h, err := start(ctx, opts, idp, renderer, nil, d)
+	h, err := start(ctx, opts, idp, renderer, nil, nil, d)
 	if err != nil {
 		t.Fatalf("start() error = %v", err)
 	}
@@ -492,15 +550,304 @@ func TestStartLiveNATSReplaceableBatchSurvivorAckHasItsOwnAgentReceivedAt(t *tes
 	}
 }
 
-// TestHostDelegatesDropCountersToPipelineAndAggregator proves Host.
-// DroppedQueueFull/DroppedBucketOverflow correctly delegate to the
-// underlying pipeline/aggregator rather than tracking their own (possibly
-// stale) copy. Constructed directly (no live NATS needed) since this only
-// exercises the delegation, not the full Start/subscribe wiring.
-func TestHostDelegatesDropCountersToPipelineAndAggregator(t *testing.T) {
+// TestStartLiveNATSRecordsEventReceivedAndRenderDurationForCriticalEvent
+// proves a valid critical (lone, immediate-render) event fires exactly one
+// RecordEventReceived and one RecordRenderDuration call on the injected
+// AgentMetrics, at the same points the observed_by_agent/submitted_to_windows
+// acks are published (see TestStartLiveNATSObserveRenderAck, which this
+// mirrors).
+func TestStartLiveNATSRecordsEventReceivedAndRenderDurationForCriticalEvent(t *testing.T) {
+	requireLiveNATS(t)
+
+	userID := "u-" + uniqueID(t)
+	ackSubject := "notify.ack.test." + uniqueID(t)
+	opts := Options{
+		NatsURL:         natsTestURL,
+		SubjectTemplate: "notify.user.%s.desktop",
+		AckSubject:      ackSubject,
+	}
+	idp := fixedIdentity{id: identity.Identity{UserID: userID, DeviceID: "d-test"}}
+	renderer := &recordingRenderer{}
+	rm := &recordingMetrics{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, err := Start(ctx, opts, idp, renderer, nil, rm)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = h.Shutdown(shutdownCtx)
+	}()
+	if err := h.nc.Flush(); err != nil {
+		t.Fatalf("flush host subscription: %v", err)
+	}
+
+	obsNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (observer): %v", err)
+	}
+	defer obsNC.Close()
+	acks := newAckCollector(collectAcks(t, obsNC, ackSubject))
+
+	pubNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (publisher): %v", err)
+	}
+	defer pubNC.Close()
+
+	eventID := "evt-" + uniqueID(t)
+	body := wireEvent(eventID, userID, "Test Title", "Test Message", "critical", "test-agg", false)
+	if err := pubNC.Publish(h.Subject(), body); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := pubNC.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	acks.waitFor(t, eventID, "observed_by_agent", 5*time.Second)
+	acks.waitFor(t, eventID, "submitted_to_windows", 5*time.Second)
+
+	waitUntilHostTest(t, 2*time.Second, func() bool {
+		received, _, durations := rm.snapshot()
+		return received == 1 && len(durations) == 1
+	})
+
+	received, dropped, durations := rm.snapshot()
+	if received != 1 {
+		t.Fatalf("RecordEventReceived call count = %d, want 1", received)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("RecordEventDropped calls = %v, want none", dropped)
+	}
+	if len(durations) != 1 {
+		t.Fatalf("RecordRenderDuration call count = %d, want 1", len(durations))
+	}
+	if durations[0] < 0 {
+		t.Fatalf("RecordRenderDuration seconds = %v, want >= 0", durations[0])
+	}
+}
+
+// TestStartLiveNATSBatchRecordsRenderDurationOncePerSourceEventNotPerToast
+// proves the batch-fanout scenario (three events sharing an aggregation
+// bucket, rendered as a single toast -- see TestStartLiveNATSBatchAckFanout,
+// which this mirrors) fires RecordRenderDuration once per *source event*
+// represented in the batch, not once per renderer.Show call/toast.
+func TestStartLiveNATSBatchRecordsRenderDurationOncePerSourceEventNotPerToast(t *testing.T) {
+	requireLiveNATS(t)
+
+	userID := "u-" + uniqueID(t)
+	ackSubject := "notify.ack.test." + uniqueID(t)
+	opts := Options{
+		NatsURL:         natsTestURL,
+		SubjectTemplate: "notify.user.%s.desktop",
+		AckSubject:      ackSubject,
+	}
+	idp := fixedIdentity{id: identity.Identity{UserID: userID, DeviceID: "d-test"}}
+	renderer := &recordingRenderer{}
+	rm := &recordingMetrics{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d := defaultDeps()
+	d.aggregatorOptions = aggregator.Options{
+		MaxBuckets:      100,
+		ImportantWindow: 2 * time.Second,
+		NormalWindow:    200 * time.Millisecond,
+	}
+	d.pipelineOptions = pipeline.Options{QueueCapacity: 500, WorkerCount: 2}
+
+	h, err := start(ctx, opts, idp, renderer, nil, rm, d)
+	if err != nil {
+		t.Fatalf("start() error = %v", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = h.Shutdown(shutdownCtx)
+	}()
+	if err := h.nc.Flush(); err != nil {
+		t.Fatalf("flush host subscription: %v", err)
+	}
+
+	obsNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (observer): %v", err)
+	}
+	defer obsNC.Close()
+	acks := newAckCollector(collectAcks(t, obsNC, ackSubject))
+
+	pubNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (publisher): %v", err)
+	}
+	defer pubNC.Close()
+
+	const aggKey = "batch-agg-metrics"
+	eventIDs := make([]string, 3)
+	for i := range eventIDs {
+		eventIDs[i] = fmt.Sprintf("evt-%s-%d", uniqueID(t), i)
+		body := wireEvent(eventIDs[i], userID, fmt.Sprintf("Title %d", i), fmt.Sprintf("Message %d", i), "normal", aggKey, false)
+		if err := pubNC.Publish(h.Subject(), body); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if err := pubNC.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	for _, id := range eventIDs {
+		acks.waitFor(t, id, "observed_by_agent", 5*time.Second)
+	}
+	for _, id := range eventIDs {
+		acks.waitFor(t, id, "submitted_to_windows", 5*time.Second)
+	}
+
+	waitUntilHostTest(t, 2*time.Second, func() bool {
+		received, _, durations := rm.snapshot()
+		return received == 3 && len(durations) == 3
+	})
+
+	received, _, durations := rm.snapshot()
+	if received != 3 {
+		t.Fatalf("RecordEventReceived call count = %d, want 3 (once per event, before batching)", received)
+	}
+	// The whole point of this test: one render call (one toast), but three
+	// RecordRenderDuration calls -- one per source event the toast represents.
+	calls := renderer.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("renderer.Show call count = %d, want 1 (batched)", len(calls))
+	}
+	if len(durations) != 3 {
+		t.Fatalf("RecordRenderDuration call count = %d, want 3 (once per source event in the batch, not once per toast)", len(durations))
+	}
+}
+
+// TestStartLiveNATSReplaceableBatchRecordsRenderDurationOnlyForSurvivor
+// proves the replaceable-collapsing scenario (see
+// TestStartLiveNATSReplaceableBatchSurvivorAckHasItsOwnAgentReceivedAt, which
+// this mirrors) fires RecordRenderDuration exactly once -- for the surviving
+// event only, since p1/p2 are discarded and never render.
+func TestStartLiveNATSReplaceableBatchRecordsRenderDurationOnlyForSurvivor(t *testing.T) {
+	requireLiveNATS(t)
+
+	userID := "u-" + uniqueID(t)
+	ackSubject := "notify.ack.test." + uniqueID(t)
+	opts := Options{
+		NatsURL:         natsTestURL,
+		SubjectTemplate: "notify.user.%s.desktop",
+		AckSubject:      ackSubject,
+	}
+	idp := fixedIdentity{id: identity.Identity{UserID: userID, DeviceID: "d-test"}}
+	renderer := &recordingRenderer{}
+	rm := &recordingMetrics{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d := defaultDeps()
+	d.aggregatorOptions = aggregator.Options{
+		MaxBuckets:      100,
+		ImportantWindow: 2 * time.Second,
+		NormalWindow:    500 * time.Millisecond,
+	}
+	d.pipelineOptions = pipeline.Options{QueueCapacity: 500, WorkerCount: 2}
+
+	h, err := start(ctx, opts, idp, renderer, nil, rm, d)
+	if err != nil {
+		t.Fatalf("start() error = %v", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = h.Shutdown(shutdownCtx)
+	}()
+	if err := h.nc.Flush(); err != nil {
+		t.Fatalf("flush host subscription: %v", err)
+	}
+
+	obsNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (observer): %v", err)
+	}
+	defer obsNC.Close()
+	acks := newAckCollector(collectAcks(t, obsNC, ackSubject))
+
+	pubNC, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect (publisher): %v", err)
+	}
+	defer pubNC.Close()
+
+	const aggKey = "progress-agg-metrics"
+	base := "evt-" + uniqueID(t)
+	eventIDs := []string{base + "-p1", base + "-p2", base + "-p3"}
+	for i, id := range eventIDs {
+		body := wireEvent(id, userID, fmt.Sprintf("Progress %d", i), fmt.Sprintf("%d%%", (i+1)*30), "normal", aggKey, true)
+		if err := pubNC.Publish(h.Subject(), body); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := pubNC.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	for _, id := range eventIDs {
+		acks.waitFor(t, id, "observed_by_agent", 5*time.Second)
+	}
+	survivorID := eventIDs[2]
+	acks.waitFor(t, survivorID, "submitted_to_windows", 5*time.Second)
+
+	waitUntilHostTest(t, 2*time.Second, func() bool {
+		received, _, durations := rm.snapshot()
+		return received == 3 && len(durations) == 1
+	})
+
+	received, _, durations := rm.snapshot()
+	if received != 3 {
+		t.Fatalf("RecordEventReceived call count = %d, want 3 (every observed event, even the discarded ones)", received)
+	}
+	if len(durations) != 1 {
+		t.Fatalf("RecordRenderDuration call count = %d, want 1 (only the surviving event renders)", len(durations))
+	}
+}
+
+// waitUntilHostTest polls cond until it returns true or timeout elapses,
+// failing the test on timeout -- avoids fixed time.Sleep races when waiting
+// for asynchronous metrics recording to catch up with acks already observed.
+func waitUntilHostTest(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !cond() {
+		t.Fatalf("condition not reached within %s", timeout)
+	}
+}
+
+// TestHostDropsInvokeMetricsRecordEventDroppedWithCorrectReason exercises
+// the drop-to-metric closures host.start uses, replicated here verbatim, to
+// prove each drop path reports the documented reason string ("queue_full",
+// "bucket_overflow") through safeRecord. It does not call start itself, so
+// it does not cover the wiring in start -- no live NATS is needed, since
+// dropping at the pipeline/aggregator layer never touches NATS.
+func TestHostDropsInvokeMetricsRecordEventDroppedWithCorrectReason(t *testing.T) {
 	clk := clock.RealClock{}
+	rm := &recordingMetrics{}
+
 	dedupCache := dedup.NewCache(10, time.Minute, clk)
-	pl := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 2}, dedupCache, func(*model.InboundNotification) {}, clk)
+	pl := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 2}, dedupCache, func(*model.InboundNotification) {}, clk, func() {
+		safeRecord(func() { rm.RecordEventDropped("queue_full") })
+	})
 	// Run is deliberately never started: with nothing draining the queue,
 	// filling it to capacity and then overflowing is deterministic.
 	if !pl.TryEnqueue([]byte("a")) {
@@ -510,7 +857,99 @@ func TestHostDelegatesDropCountersToPipelineAndAggregator(t *testing.T) {
 		t.Fatal("2nd TryEnqueue: got true, want false (queue full)")
 	}
 
-	agg := aggregator.New(aggregator.Options{MaxBuckets: 1}, clk, func([]*model.InboundNotification) {})
+	agg := aggregator.New(aggregator.Options{MaxBuckets: 1}, clk, func([]*model.InboundNotification) {}, func() {
+		safeRecord(func() { rm.RecordEventDropped("bucket_overflow") })
+	})
+	agg.Add(&model.InboundNotification{
+		Classification: model.Classification{Priority: model.PriorityNormal, AggregationKey: "a"},
+	})
+	agg.Add(&model.InboundNotification{
+		Classification: model.Classification{Priority: model.PriorityNormal, AggregationKey: "b"}, // 2nd distinct key: over MaxBuckets=1, dropped
+	})
+
+	_, dropped, _ := rm.snapshot()
+	want := []string{"queue_full", "bucket_overflow"}
+	if len(dropped) != len(want) {
+		t.Fatalf("RecordEventDropped calls = %v, want %v", dropped, want)
+	}
+	for i := range want {
+		if dropped[i] != want[i] {
+			t.Fatalf("RecordEventDropped calls = %v, want %v", dropped, want)
+		}
+	}
+}
+
+// TestPanickingMetricsAreContainedInOnObservedAndRender proves the
+// safeRecord guard around every AgentMetrics call site in onObserved/render
+// actually contains a panic (this test function returning normally instead
+// of the test process crashing) instead of letting it propagate -- and that
+// normal operation (ack publishing) still completes despite every metrics
+// call panicking. Uses a real NATS connection for publishAck (so it doesn't
+// itself fail with a nil-pointer panic), but bypasses Start/start entirely,
+// calling onObserved/render directly for a deterministic, synchronous test.
+func TestPanickingMetricsAreContainedInOnObservedAndRender(t *testing.T) {
+	requireLiveNATS(t)
+
+	nc, err := nats.Connect(natsTestURL)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	defer nc.Close()
+
+	ackSubject := "notify.ack.test." + uniqueID(t)
+	acks := newAckCollector(collectAcks(t, nc, ackSubject))
+
+	renderer := &recordingRenderer{}
+	h := &Host{
+		nc:         nc,
+		renderer:   renderer,
+		clk:        clock.RealClock{},
+		metrics:    panickingMetrics{},
+		ackSubject: ackSubject,
+		deviceID:   "d-test",
+	}
+	h.agg = aggregator.New(aggregator.Options{}, h.clk, h.render, nil)
+
+	event := &model.InboundNotification{
+		EventID:         "evt-" + uniqueID(t),
+		AgentReceivedAt: time.Now(),
+		Classification:  model.Classification{Priority: model.PriorityCritical, AggregationKey: "k"},
+	}
+
+	// Must not panic, despite every AgentMetrics method panicking
+	// unconditionally: onObserved calls RecordEventReceived, then
+	// h.agg.Add (critical priority) synchronously calls h.render, which
+	// calls RecordRenderDuration.
+	h.onObserved(event)
+
+	acks.waitFor(t, event.EventID, "observed_by_agent", 5*time.Second)
+	acks.waitFor(t, event.EventID, "submitted_to_windows", 5*time.Second)
+
+	calls := renderer.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("renderer.Show call count = %d, want 1", len(calls))
+	}
+}
+
+// TestHostDelegatesDropCountersToPipelineAndAggregator proves Host.
+// DroppedQueueFull/DroppedBucketOverflow correctly delegate to the
+// underlying pipeline/aggregator rather than tracking their own (possibly
+// stale) copy. Constructed directly (no live NATS needed) since this only
+// exercises the delegation, not the full Start/subscribe wiring.
+func TestHostDelegatesDropCountersToPipelineAndAggregator(t *testing.T) {
+	clk := clock.RealClock{}
+	dedupCache := dedup.NewCache(10, time.Minute, clk)
+	pl := pipeline.New(pipeline.Options{QueueCapacity: 1, WorkerCount: 2}, dedupCache, func(*model.InboundNotification) {}, clk, nil)
+	// Run is deliberately never started: with nothing draining the queue,
+	// filling it to capacity and then overflowing is deterministic.
+	if !pl.TryEnqueue([]byte("a")) {
+		t.Fatal("1st TryEnqueue: got false, want true (within capacity)")
+	}
+	if pl.TryEnqueue([]byte("b")) {
+		t.Fatal("2nd TryEnqueue: got true, want false (queue full)")
+	}
+
+	agg := aggregator.New(aggregator.Options{MaxBuckets: 1}, clk, func([]*model.InboundNotification) {}, nil)
 	agg.Add(&model.InboundNotification{
 		Classification: model.Classification{Priority: model.PriorityNormal, AggregationKey: "a"},
 	})
@@ -592,7 +1031,7 @@ func TestStartFailsOnBadIdentity(t *testing.T) {
 	idp := failingIdentity{}
 	opts := Options{NatsURL: natsTestURL, SubjectTemplate: "notify.user.%s.desktop", AckSubject: "notify.ack.desktop"}
 
-	h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil)
+	h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil, nil)
 	if err == nil {
 		t.Fatalf("Start() error = nil, want non-nil when identity resolution fails")
 	}
@@ -615,7 +1054,7 @@ func TestStartFailsOnUnreachableNATS(t *testing.T) {
 		AckSubject:      "notify.ack.desktop",
 	}
 
-	h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil)
+	h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil, nil)
 	if err == nil {
 		t.Fatalf("Start() error = nil, want non-nil for unreachable NATS")
 	}
@@ -632,7 +1071,7 @@ func TestStartFailsOnSubjectTemplateMissingPlaceholder(t *testing.T) {
 		AckSubject:      "notify.ack.desktop",
 	}
 
-	h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil)
+	h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil, nil)
 	if err == nil {
 		t.Fatalf("Start() error = nil, want non-nil for a subject template with no %%s placeholder")
 	}
@@ -650,7 +1089,7 @@ func TestStartFailsOnUserIDWithSubjectWildcardCharacters(t *testing.T) {
 
 	for _, userID := range []string{"*", ">", "a.b", "a*b", "a>b"} {
 		idp := fixedIdentity{id: identity.Identity{UserID: userID, DeviceID: "d1"}}
-		h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil)
+		h, err := Start(context.Background(), opts, idp, &recordingRenderer{}, nil, nil)
 		if err == nil {
 			t.Errorf("Start() with UserID %q: error = nil, want non-nil (subject wildcard/delimiter character)", userID)
 		}

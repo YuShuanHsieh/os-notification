@@ -57,6 +57,14 @@ public sealed class AgentHost : IAsyncDisposable
         get;
     }
 
+    /// <summary>Mirrors the sibling Go implementation's <c>Host.DroppedQueueFull()</c>
+    /// accessor for cross-language observability parity.</summary>
+    public long DroppedQueueFull => _pipeline.DroppedQueueFull;
+
+    /// <summary>Mirrors the sibling Go implementation's <c>Host.DroppedBucketOverflow()</c>
+    /// accessor for cross-language observability parity.</summary>
+    public long DroppedBucketOverflow => _aggregator.DroppedBucketOverflow;
+
     private AgentHost(NatsConnection nats, EventPipeline pipeline, Aggregator aggregator, string subject)
     {
         _nats = nats;
@@ -115,6 +123,7 @@ public sealed class AgentHost : IAsyncDisposable
         IIdentityProvider identityProvider,
         IToastRenderer renderer,
         INatsAuthProvider? authProvider = null,
+        IAgentMetrics? metrics = null,
         CancellationToken ct = default)
     {
         ValidateSubjectTemplate(options.SubjectTemplate);
@@ -134,7 +143,8 @@ public sealed class AgentHost : IAsyncDisposable
                 renderer,
                 telemetry,
                 identity.DeviceId,
-                TimeProvider.System);
+                TimeProvider.System,
+                metrics ?? NullAgentMetrics.Instance);
             pipeline.Start();
 
             var subject = string.Format(CultureInfo.InvariantCulture, options.SubjectTemplate, identity.UserId);

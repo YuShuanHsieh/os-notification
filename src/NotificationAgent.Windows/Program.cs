@@ -42,6 +42,16 @@ foreach (var diagnostic in settingsDiagnostics)
 
 startupLogger.StartupSettingsFile(settingsPath, settingsFileExists);
 
+// Feature: OTel metrics. Constructed after the logger so a telemetry setup failure (bad
+// exporter endpoint, SDK init failure, etc.) can actually be logged -- and always falls
+// back to a no-op implementation rather than failing startup (WindowsSettings.Resolve owns
+// the otelEnabled/otelExporterEndpoint/otelServiceName precedence).
+var metrics = OpenTelemetryAgentMetrics.Create(
+    settings.OtelEnabled,
+    settings.OtelExporterEndpoint,
+    settings.OtelServiceName,
+    loggerFactory.CreateLogger("OpenTelemetryAgentMetrics"));
+
 var options = settings.Options;
 var clientId = settings.AadClientId;
 MsalIdentityProvider? msalIdentity =
@@ -74,5 +84,6 @@ if (startupLogger.IsEnabled(LogLevel.Information))
 }
 
 Application.Run(new TrayApplicationContext(
-    ct => AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider, ct),
-    loggerFactory.CreateLogger<TrayApplicationContext>()));
+    ct => AgentHost.StartAsync(options, identity, new WindowsToastRenderer(), authProvider, metrics, ct: ct),
+    loggerFactory.CreateLogger<TrayApplicationContext>(),
+    metrics as IDisposable));

@@ -6,6 +6,7 @@
 // including this Linux dev machine. Only the small pieces that actually need
 // a Windows API or a Windows-only env var (`LOCALAPPDATA`) are internally
 // gated; see each module's doc comment.
+mod otel_metrics;
 mod settings;
 mod windows_identity;
 
@@ -255,8 +256,8 @@ mod win {
         tray: super::tray::TrayHandle,
         settings: Settings,
     ) -> anyhow::Result<()> {
-        let host = match start_host(&settings).await {
-            Ok(host) => host,
+        let (host, metrics_shutdown) = match start_host(&settings).await {
+            Ok(v) => v,
             Err(e) => {
                 tray.set_start_failed();
                 return Err(e);
@@ -267,10 +268,18 @@ mod win {
             _ = tokio::signal::ctrl_c() => {}
             _ = close_rx.recv() => {}
         }
-        host.shutdown().await
+        let result = host.shutdown().await;
+        // Flush/tear down metrics after the host (so any dropped/render metrics
+        // recorded during shutdown are still captured) and before this fn returns
+        // -- tray.rs's Close handler waits for this thread to finish (via
+        // done_tx/done_rx) before std::process::exit(0), so this always runs first.
+        metrics_shutdown.shutdown();
+        result
     }
 
-    async fn start_host(settings: &Settings) -> anyhow::Result<AgentHost> {
+    async fn start_host(
+        settings: &Settings,
+    ) -> anyhow::Result<(AgentHost, crate::otel_metrics::MetricsShutdown)> {
         // Every std::env::var(...) here has moved to settings::resolved_str/opt, which
         // layers the settings file underneath: env var (if set, non-blank) > settings
         // file value (if non-blank) > built-in default (feature: app settings file).
@@ -379,8 +388,20 @@ mod win {
             },
         };
 
-        let host = AgentHost::start(config, identity, renderer, auth_provider).await?;
-        Ok(host)
+        let (metrics, metrics_shutdown) = crate::otel_metrics::init(settings);
+        let host = match AgentHost::start(config, identity, renderer, auth_provider, Some(metrics))
+            .await
+        {
+            Ok(host) => host,
+            Err(e) => {
+                // Startup failed after metrics were already initialized: flush/tear
+                // down rather than leaking the provider (and its background export
+                // thread) for the remainder of the process's life.
+                metrics_shutdown.shutdown();
+                return Err(e);
+            }
+        };
+        Ok((host, metrics_shutdown))
     }
 }
 

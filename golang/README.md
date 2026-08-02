@@ -19,7 +19,8 @@ A Go port of the desktop notification agent, wire-compatible with the C# agent i
 | `internal/aggregator` | Priority routing, batching, and replaceable collapsing, keyed by `(aggregationKey, priority)`. |
 | `internal/toast` | Builds renderer-neutral toast content from one or more notifications. |
 | `internal/pipeline` | Bounded intake queue + worker pool at the front of the agent. |
-| `internal/host` | The `AgentHost` composition root: resolves identity, connects to NATS, wires dedup/pipeline/aggregator/renderer/ack-publishing together (`Start`/`Shutdown`). |
+| `internal/host` | The `AgentHost` composition root: resolves identity, connects to NATS, wires dedup/pipeline/aggregator/renderer/ack-publishing/metrics together (`Start`/`Shutdown`). |
+| `internal/metrics` | `AgentMetrics` interface (events-received/dropped/render-duration) and its `NullAgentMetrics` no-op default -- deliberately free of any `go.opentelemetry.io/otel*` import, following the same interface-in-`internal/*`, real-implementation-in-the-head-that-needs-it pattern as `identity.Provider`/`toast.Renderer`/`natsauth.Provider`. See "Metrics (OpenTelemetry, Windows head only)" below. |
 | `internal/imagecache` | Bounded, HTTPS-only, best-effort local disk cache for remote avatar images. |
 | `internal/windowstoast` | Builds the Windows toast notification XML as a pure, cross-platform-testable string builder. |
 | `cmd/notify-agent-console` | Linux dev head — subscribes for real, prints `[TOAST]` blocks to stdout instead of showing a native toast. |
@@ -28,7 +29,7 @@ A Go port of the desktop notification agent, wire-compatible with the C# agent i
 
 ## Prerequisites
 
-- **Go 1.25** (this module targets `go 1.25.10`; any current Go 1.25.x toolchain works):
+- **Go 1.26** (this module targets `go 1.26.4`; any current Go 1.26.x toolchain works):
   ```bash
   # if not already installed, see https://go.dev/doc/install
   go version
@@ -84,9 +85,9 @@ go run ./cmd/test-publisher -- u_demo --scenario presence
 
 **The console head** (`cmd/notify-agent-console`) implements environment identity only: set `NOTIFY_USER_ID` (and optionally `NOTIFY_DEVICE_ID`) — `internal/identity.EnvIdentity` is its only `identity.Provider`. There is no AAD/MSAL sign-in (C#) and no device-code OIDC flow (Rust) here. `NOTIFY_AAD_CLIENT_ID` and `NOTIFY_AAD_TENANT_ID` are not read by this agent.
 
-**The Windows head** (`cmd/notify-agent-windows`) no longer requires (or reads) `NOTIFY_USER_ID` at all: it derives a default identity from the current Windows account name instead, via `WindowsUsernameIdentity` (`cmd/notify-agent-windows/identity_windows.go`). This calls the Win32 `GetUserNameW` function (`advapi32.dll`, raw `syscall`/`NewLazySystemDLL` — the same pattern `aumid.go` already uses for `shell32.dll`), strips any `DOMAIN\` prefix, lowercases the remaining username, and builds the ID as `u_{username}` (matching the `u_{oid}` shape other identity sources in this product use). The result is validated against the same NATS-subject-safety rule `internal/host` enforces (rejecting `.`, `*`, `>`) before it's used.
+**The Windows head** (`cmd/notify-agent-windows`) no longer requires (or reads) `NOTIFY_USER_ID` at all: it derives a default identity from the current Windows account instead, via `WindowsUsernameIdentity` (`cmd/notify-agent-windows/identity_windows.go`). This calls the wrapped `GetUserNameEx` function (`secur32.dll`, via `golang.org/x/sys/windows`) with `windows.NameSamCompatible` to retrieve the SAM-compatible, domain-qualified name (`DOMAIN\username`, or `MACHINENAME\username` on a machine that isn't domain-joined) — falling back to the plain Win32 `GetUserNameW` (`advapi32.dll`, raw `syscall`/`NewLazySystemDLL` — the same pattern `aumid.go` already uses for `shell32.dll`) if `GetUserNameEx` fails. Either way, only the account-name portion after the domain/machine separator is used — the qualifier itself is discarded, since deployments using this Windows head are expected to guarantee account-name uniqueness themselves. The account name is lowercased and sanitized (every character outside `[a-z0-9_-]` becomes `_`), giving the plain sanitized username as the user ID (e.g. `jdoe`) — see `userIDFromWindowsUsername` in `identity.go`. The result is validated against the same NATS-subject-safety rule `internal/host` enforces (rejecting `.`, `*`, `>`) before it's used.
 
-This is a **deliberate, documented, Windows-heads-only exception** to this product's general rule that the OS account name is never used as identity (see `internal/identity`'s package doc and `../context/contracts-and-invariants.md`) — the C#/Rust Windows heads take the same fallback only when AAD isn't configured; the Go Windows head takes it unconditionally, since it has no AAD/device-code identity path at all. The device ID still defaults to `d-{lowercase hostname}` (`identity.go`'s `defaultWindowsDeviceID`), overridable via `NOTIFY_DEVICE_ID` or the settings file's `deviceId`. This provider cannot be exercised outside a real Windows session; its pure username→`u_{...}` transformation and validation logic (`identity.go`'s `userIDFromWindowsUsername`) is covered by `identity_test.go` and runs on any platform.
+This is a **deliberate, documented, Windows-heads-only exception** to this product's general rule that the OS account name is never used as identity (see `internal/identity`'s package doc and `../context/contracts-and-invariants.md`) — the C#/Rust Windows heads take the same fallback only when AAD isn't configured; the Go Windows head takes it unconditionally, since it has no AAD/device-code identity path at all. The device ID still defaults to `d-{lowercase hostname}` (`identity.go`'s `defaultWindowsDeviceID`), overridable via `NOTIFY_DEVICE_ID` or the settings file's `deviceId`. This provider cannot be exercised outside a real Windows session; its pure username transformation and validation logic (`identity.go`'s `userIDFromWindowsUsername`) is covered by `identity_test.go` and runs on any platform.
 
 ### NATS authentication
 
@@ -103,17 +104,30 @@ The Windows head reads an optional JSON settings file at `%LOCALAPPDATA%\Desktop
   "ackSubject": "notify.ack.desktop",
   "natsCredsFile": "",
   "deviceId": "",
-  "logLevel": "info"
+  "logLevel": "info",
+  "otelEnabled": false,
+  "otelExporterEndpoint": "",
+  "otelServiceName": "notify-agent-windows-golang"
 }
 ```
 
 This schema intentionally covers only what the Go Windows head actually acts on — it has no AAD/device-code identity and no external-auth-service NATS auth mode, so unlike C#'s broader settings file, there is no field for either here.
 
-**Precedence per field: environment variable (if set and non-blank) > settings file value (if present and non-blank) > built-in default.** This is implemented in `cmd/notify-agent-windows/settings.go` (`ResolveHostOptions`, `ResolveCredsFile`, `ResolveDeviceID`, `ResolveLogLevel`), which layers the parsed `Settings` under an already environment-resolved `host.Options` — `host.OptionsFromEnv` and `host.Options` themselves are untouched, since those are shared, cross-platform types. A missing file is normal (never created or required); a malformed file logs a warning and falls back to defaults, never a startup failure. The console head is unaffected — it has no settings file, environment variables only.
+**Precedence per field: environment variable (if set and non-blank) > settings file value (if present and non-blank) > built-in default.** This is implemented in `cmd/notify-agent-windows/settings.go` (`ResolveHostOptions`, `ResolveCredsFile`, `ResolveDeviceID`, `ResolveLogLevel`, `ResolveOtelEnabled`, `ResolveOtelExporterEndpoint`, `ResolveOtelServiceName`), which layers the parsed `Settings` under an already environment-resolved `host.Options` — `host.OptionsFromEnv` and `host.Options` themselves are untouched, since those are shared, cross-platform types. A missing file is normal (never created or required); a malformed file logs a warning and falls back to defaults, never a startup failure. The console head is unaffected — it has no settings file, environment variables only, and never configures metrics at all.
+
+`otelEnabled`/`otelExporterEndpoint`/`otelServiceName` are also overridable via `NOTIFY_OTEL_ENABLED` (parsed with `strconv.ParseBool`), `NOTIFY_OTEL_EXPORTER_ENDPOINT`, and `NOTIFY_OTEL_SERVICE_NAME` respectively — same env-wins-over-file-wins-over-default precedence as every other field. See "Metrics (OpenTelemetry, Windows head only)" below.
 
 ## Logging
 
 Both heads use the standard library's `log/slog` (a text handler writing to stderr) as the logging convention across `internal/*` and both `cmd/` heads, covering identity resolution, NATS connect/subscribe, render failures, intake-queue-full and aggregation-bucket-overflow drops, and (Windows only) tray lifecycle events (icon shown, Close clicked, agent-start failure). Notification content itself (titles/messages/URLs) is never logged — only identifiers, counts, and error reasons. The minimum level is `NOTIFY_LOG_LEVEL` (both heads) or, on the Windows head, the settings file's `logLevel` (env wins when both are set); default `info`.
+
+## Metrics (OpenTelemetry, Windows head only)
+
+The Windows head can optionally export three OpenTelemetry metrics over OTLP/HTTP: a counter of events accepted into the pipeline (`agent.events.received`), a counter of dropped events tagged with a `reason` attribute (`agent.events.dropped`, `"queue_full"` or `"bucket_overflow"`), and a histogram of end-to-end per-event processing latency in seconds (`agent.render.duration`, once per source event represented in a rendered toast — a batched toast covering 3 events records 3 observations, not 1). It is **off by default** — set `otelEnabled: true` and a non-blank `otelExporterEndpoint` (settings file) or `NOTIFY_OTEL_ENABLED=true`/`NOTIFY_OTEL_EXPORTER_ENDPOINT=...` (env, wins over the file) to turn it on. `otelServiceName`/`NOTIFY_OTEL_SERVICE_NAME` sets the `service.name` resource attribute (default `notify-agent-windows-golang`).
+
+`internal/metrics.AgentMetrics` is the interface these three calls go through, defined without any dependency on `go.opentelemetry.io/otel*` — following the same "small interface in `internal/*`, real implementation supplied by the head that needs it" pattern as `identity.Provider`/`toast.Renderer`/`natsauth.Provider`. Only `cmd/notify-agent-windows/otelmetrics.go` imports the actual OTel SDK/exporter packages and builds the real implementation (`InitMetrics`, called from `main.go` after the logger is configured); `internal/host`/`internal/pipeline`/`internal/aggregator` only ever see the interface, defaulting to `internal/metrics.NullAgentMetrics{}` (a no-op) when nothing is supplied. **`cmd/notify-agent-console` never imports any `go.opentelemetry.io/otel*` package at all** — verify with `go list -deps ./cmd/notify-agent-console/... | grep opentelemetry` (expect no output).
+
+**Metrics-recording code can never crash the agent**, by explicit design: every call into `AgentMetrics` from `internal/host` is wrapped in a `safeRecord` helper (`defer recover()`), and the concrete OpenTelemetry implementation's own methods each carry their own `defer recover()` too — belt and suspenders, even though the stable OTel Go metric API's `Add`/`Record` calls don't themselves return errors. `InitMetrics` itself is wrapped the same way: any failure constructing the exporter, provider, or instruments (bad endpoint, unreachable collector, etc.) is logged via `slog.Error` and falls back to `NullAgentMetrics{}` rather than aborting startup or being treated as fatal — a telemetry misconfiguration degrades gracefully, it never takes down the agent. `internal/pipeline`/`internal/aggregator` stay decoupled from `AgentMetrics` itself (matching their existing "pipeline/aggregator don't know about telemetry, host wires them together" architecture): each instead takes a small optional `func()` callback (`pipeline.New`'s/`aggregator.New`'s `onDropped` parameter) invoked at the exact point a drop is counted, which `internal/host` wires to a `safeRecord`-guarded `RecordEventDropped` call with the appropriate reason string.
 
 ## Build the Windows head
 
@@ -157,4 +171,4 @@ Toast rendering has no mature pure-Go WinRT projection to build on (unlike Rust'
 - No external-auth-service NATS authentication — only `.creds`-file auth is implemented.
 - Windows toast rendering goes through a `powershell.exe`-invoked WinRT script rather than native bindings. This is an intentional architecture choice (no mature pure-Go WinRT projection exists), not a defect, but it does mean toast submission depends on `powershell.exe` being present and functional.
 - The tray icon uses `github.com/getlantern/systray` rather than raw Win32 `Shell_NotifyIconW` calls.
-- Same as the C# and Rust implementations: the Windows head's live/visual behavior (tray icon, toast rendering, Close lifecycle, the settings file actually being read, the `GetUserNameW`-based identity resolution, and the compiled `.exe`'s Explorer/taskbar icon) has not been verified on a real Windows desktop from this environment — only cross-compilation has been confirmed, plus (for the icon) that the `.rsrc` PE section is present in the cross-compiled binary.
+- Same as the C# and Rust implementations: the Windows head's live/visual behavior (tray icon, toast rendering, Close lifecycle, the settings file actually being read, the `GetUserNameEx`-based identity resolution (including its `GetUserNameW` fallback), and the compiled `.exe`'s Explorer/taskbar icon) has not been verified on a real Windows desktop from this environment — only cross-compilation has been confirmed, plus (for the icon) that the `.rsrc` PE section is present in the cross-compiled binary.

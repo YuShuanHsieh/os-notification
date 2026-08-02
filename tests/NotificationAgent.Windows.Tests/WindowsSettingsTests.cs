@@ -25,6 +25,9 @@ public class WindowsSettingsTests
         Assert.Null(file.AadTenantId);
         Assert.Null(file.DeviceId);
         Assert.Null(file.LogLevel);
+        Assert.Null(file.OtelEnabled);
+        Assert.Null(file.OtelExporterEndpoint);
+        Assert.Null(file.OtelServiceName);
     }
 
     [Fact]
@@ -42,6 +45,9 @@ public class WindowsSettingsTests
         Assert.Equal("organizations", resolved.AadTenantId);
         Assert.Null(resolved.DeviceId);
         Assert.Equal(LogLevel.Information, resolved.LogLevel);
+        Assert.False(resolved.OtelEnabled);
+        Assert.Null(resolved.OtelExporterEndpoint);
+        Assert.Equal("notify-agent-windows-csharp", resolved.OtelServiceName);
     }
 
     [Fact]
@@ -272,6 +278,95 @@ public class WindowsSettingsTests
         var entry = Assert.Single(logger.Entries);
         Assert.Equal(LogLevel.Warning, entry.Level);
         Assert.Contains("not-a-level", entry.Message);
+    }
+
+    [Fact]
+    public void Resolve_uses_file_otel_settings_when_no_env_set()
+    {
+        var file = new WindowsSettingsFile
+        {
+            OtelEnabled = true,
+            OtelExporterEndpoint = "http://collector:4317",
+            OtelServiceName = "custom-service",
+        };
+
+        var resolved = WindowsSettings.Resolve(file, NoEnv);
+
+        Assert.True(resolved.OtelEnabled);
+        Assert.Equal("http://collector:4317", resolved.OtelExporterEndpoint);
+        Assert.Equal("custom-service", resolved.OtelServiceName);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("True")]
+    [InlineData("1")]
+    public void Resolve_parses_otel_enabled_env_var_truthy_values(string envValue)
+    {
+        var file = new WindowsSettingsFile { OtelEnabled = false };
+        Func<string, string?> env = name => name == "NOTIFY_OTEL_ENABLED" ? envValue : null;
+
+        var resolved = WindowsSettings.Resolve(file, env);
+
+        Assert.True(resolved.OtelEnabled);
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("0")]
+    public void Resolve_parses_otel_enabled_env_var_falsy_values(string envValue)
+    {
+        var file = new WindowsSettingsFile { OtelEnabled = true };
+        Func<string, string?> env = name => name == "NOTIFY_OTEL_ENABLED" ? envValue : null;
+
+        var resolved = WindowsSettings.Resolve(file, env);
+
+        Assert.False(resolved.OtelEnabled);
+    }
+
+    [Fact]
+    public void Resolve_env_otel_enabled_wins_over_file_value()
+    {
+        var file = new WindowsSettingsFile { OtelEnabled = false };
+        Func<string, string?> env = name => name == "NOTIFY_OTEL_ENABLED" ? "true" : null;
+
+        var resolved = WindowsSettings.Resolve(file, env);
+
+        Assert.True(resolved.OtelEnabled);
+    }
+
+    [Fact]
+    public void Resolve_falls_back_to_file_value_when_otel_enabled_env_var_is_unparsable()
+    {
+        var file = new WindowsSettingsFile { OtelEnabled = true };
+        Func<string, string?> env = name => name == "NOTIFY_OTEL_ENABLED" ? "not-a-bool" : null;
+
+        var resolved = WindowsSettings.Resolve(file, env);
+
+        Assert.True(resolved.OtelEnabled);
+    }
+
+    [Fact]
+    public void Resolve_env_otel_exporter_endpoint_wins_over_file_value()
+    {
+        var file = new WindowsSettingsFile { OtelExporterEndpoint = "http://from-file:4317" };
+        Func<string, string?> env =
+            name => name == "NOTIFY_OTEL_EXPORTER_ENDPOINT" ? "http://from-env:4317" : null;
+
+        var resolved = WindowsSettings.Resolve(file, env);
+
+        Assert.Equal("http://from-env:4317", resolved.OtelExporterEndpoint);
+    }
+
+    [Fact]
+    public void Resolve_env_otel_service_name_wins_over_file_value()
+    {
+        var file = new WindowsSettingsFile { OtelServiceName = "from-file" };
+        Func<string, string?> env = name => name == "NOTIFY_OTEL_SERVICE_NAME" ? "from-env" : null;
+
+        var resolved = WindowsSettings.Resolve(file, env);
+
+        Assert.Equal("from-env", resolved.OtelServiceName);
     }
 
     private static string WriteTempFile(string contents)
