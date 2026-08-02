@@ -29,7 +29,7 @@ A Go port of the desktop notification agent, wire-compatible with the C# agent i
 
 ## Prerequisites
 
-- **Go 1.25** (this module targets `go 1.25.10`; any current Go 1.25.x toolchain works):
+- **Go 1.26** (this module targets `go 1.26.4`; any current Go 1.26.x toolchain works):
   ```bash
   # if not already installed, see https://go.dev/doc/install
   go version
