@@ -1,7 +1,5 @@
 // src/NotificationAgent.Windows/WindowsUsernameIdentityProvider.cs
-using System.Security.Cryptography;
 using System.Security.Principal;
-using System.Text;
 using Microsoft.Extensions.Logging;
 using NotificationAgent.Core.Identity;
 
@@ -75,14 +73,18 @@ public sealed class WindowsUsernameIdentityProvider : IIdentityProvider
     {
         _logger?.IdentityModeWindowsUsername();
 
-        // The raw value is the SAM-compatible, domain-qualified name (DOMAIN\username or
-        // MACHINENAME\username) by default — see GetDomainQualifiedUsernameOrFallback above —
-        // and is deliberately kept intact rather than stripped to the bare username: two
-        // different domains' identically-named accounts (e.g. CORP\jdoe and CONTOSO\jdoe)
-        // must resolve to different identities, not collide. The backslash separator is just
-        // untrusted OS input like every other character here, and falls out naturally in the
-        // sanitize step below (mapped to '_' like any other disallowed character).
+        // The raw value may be the SAM-compatible, domain-qualified name (DOMAIN\username or
+        // MACHINENAME\username) or the bare Environment.UserName fallback — see
+        // GetDomainQualifiedUsernameOrFallback above. Either way, only the portion after the
+        // last backslash becomes the identity: deployments using this provider are expected
+        // to guarantee account-name uniqueness themselves, so no domain disambiguation is
+        // attempted here.
         var candidate = _getRawUsername().Trim().ToLowerInvariant();
+        var separatorIndex = candidate.LastIndexOf('\\');
+        if (separatorIndex >= 0)
+        {
+            candidate = candidate[(separatorIndex + 1)..];
+        }
 
         if (candidate.Length == 0)
         {
@@ -101,25 +103,12 @@ public sealed class WindowsUsernameIdentityProvider : IIdentityProvider
         // `first.last`-style Windows/AD usernames (sanitized to `first_last` instead) — this
         // identity path is the only one available when no AAD client id is configured, so a
         // hard rejection would otherwise leave those accounts with no way to run the agent.
-        //
-        // The allowlist mapping is inherently lossy: two different usernames can sanitize to
-        // the same string (e.g. "user.name" and "user_name" both become "user_name"), which
-        // would otherwise let two different users collide onto one identity/NATS subject. A
-        // hash of the *pre-sanitization* normalized username is appended as a suffix so
-        // collisions in the human-readable prefix can never collide in the full user id. This
-        // is also why the domain qualifier is deliberately retained rather than stripped: it
-        // is part of the normalized string the hash is computed over, so two same-named
-        // accounts in different domains (or one domain-joined and one local) now hash
-        // differently. This exact algorithm (lowercase, trim, sanitize, append 8 hex chars of
-        // SHA-256(normalized)) is mirrored identically in the sibling Rust and Go
-        // implementations of this product so all three agree on one user's identity.
-        var sanitized = new string(candidate
+        // This exact transformation (strip domain, sanitize) is mirrored identically in the
+        // sibling Rust and Go implementations of this product so all three agree on one
+        // user's identity.
+        var userId = new string(candidate
             .Select(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' ? c : '_')
             .ToArray());
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(candidate));
-        var hash8 = Convert.ToHexString(hash[..4]).ToLowerInvariant();
-
-        var userId = $"u_{sanitized}_{hash8}";
         var deviceId = DeviceIdStore.GetOrCreate(_deviceIdOverride);
         _logger?.IdentityResolvedWindowsUsername(userId, deviceId);
         return ValueTask.FromResult(new AgentIdentity(userId, deviceId));

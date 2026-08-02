@@ -53,7 +53,7 @@ IToastRenderer ──► ack: submitted_to_windows ──► NATS notify.ack.des
 `IIdentityProvider` resolves the application user ID and device ID. The Windows account name itself is not used as identity for the primary paths (AAD/MSAL sign-in, or the console host's environment-variable identity):
 
 - **Windows (AAD, when `NOTIFY_AAD_CLIENT_ID` is set):** `MsalIdentityProvider` — WAM-brokered silent MSAL sign-in; user ID is the Entra object ID (`u_{oid}`), device ID is a stable per-install GUID under `%LOCALAPPDATA%\DesktopNotificationAgent`.
-- **Windows (default, no AAD configured):** `WindowsUsernameIdentityProvider` — a deliberate, narrow exception derives the user ID from the signed-in Windows username instead, so `NOTIFY_USER_ID` is no longer required (or read) by the Windows head. The username is resolved via the SAM-compatible, domain-qualified name format (`DOMAIN\username`, or `MACHINENAME\username` when the machine isn't domain-joined) rather than a bare username, so two identically-named accounts in different domains resolve to different identities; it is then normalized (lowercased, trimmed) then sanitized — every character outside `[a-z0-9_-]` (including NATS subject wildcard/delimiter characters like `.`/`*`/`>`, whitespace, and the `\` domain/username separator) is replaced with `_`, rather than rejected — and suffixed with an 8-hex-character `SHA-256` digest of the pre-sanitization username so two usernames that sanitize to the same string still resolve to different identities: `u_{sanitized}_{hash8}`.
+- **Windows (default, no AAD configured):** `WindowsUsernameIdentityProvider` — a deliberate, narrow exception derives the user ID from the signed-in Windows username instead, so `NOTIFY_USER_ID` is no longer required (or read) by the Windows head. The username is resolved via the SAM-compatible, domain-qualified name format (`DOMAIN\username`, or `MACHINENAME\username` when the machine isn't domain-joined), but only the account-name portion after the domain separator is used — the domain/machine qualifier is discarded, since deployments using this provider are expected to guarantee account-name uniqueness themselves. The account name is normalized (lowercased, trimmed) then sanitized — every character outside `[a-z0-9_-]` (including NATS subject wildcard/delimiter characters like `.`/`*`/`>` and whitespace) is replaced with `_`, rather than rejected — giving the plain sanitized username as the user ID (e.g. `jdoe`), with no prefix or suffix.
 - **Console/dev (Linux):** `EnvironmentIdentityProvider` — reads `NOTIFY_USER_ID` (required) and `NOTIFY_DEVICE_ID` (defaults to `d-{machinename}`). Unchanged; still the only identity source for `NotificationAgent.ConsoleHost`.
 
 ### Wire contracts
@@ -209,7 +209,8 @@ The agent prints an `observed_by_agent` ack per event immediately, batches the t
 dotnet build src/NotificationAgent.Windows
 $env:NOTIFY_NATS_URL = "nats://your-nats-host:4222"
 # Default: no AAD client id, so identity is derived from the signed-in Windows
-# username instead (`u_{lowercased username}`) -- NOTIFY_USER_ID is not read here.
+# username instead (lowercased, domain dropped, e.g. "jdoe") -- NOTIFY_USER_ID
+# is not read here.
 # ...or use real Entra identity via WAM instead:
 # $env:NOTIFY_AAD_CLIENT_ID = "<app registration client id>"
 # $env:NOTIFY_AAD_TENANT_ID = "<tenant id>"    # optional, defaults to "organizations"

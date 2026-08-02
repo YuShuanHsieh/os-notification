@@ -284,15 +284,14 @@ selection between them at startup.
   falls back to interactive acquisition when UI is required. Without one,
   `WindowsUsernameIdentityProvider` derives a default identity from the Windows
   username, resolved via the SAM-compatible, domain-qualified name format
-  (`DOMAIN\username`, or `MACHINENAME\username` when not domain-joined) so
-  that two identically-named accounts in different domains resolve to
-  different identities: normalized (lowercased, trimmed), sanitized to
-  `[a-z0-9_-]` (every other character, including `.`/`*`/`>`/whitespace/the
-  `\` separator, becomes `_`), then suffixed with an 8-hex-character
-  `SHA-256` digest of the pre-sanitization normalized username so that two
-  usernames sanitizing to the same string (e.g. `"user.name"` and
-  `"user_name"`) still resolve to different identities —
-  `u_{sanitized}_{hash8}`.
+  (`DOMAIN\username`, or `MACHINENAME\username` when not domain-joined), but
+  only the account-name portion after the domain/machine separator is used —
+  the qualifier is discarded, since deployments using this provider are
+  expected to guarantee account-name uniqueness themselves. The account name
+  is normalized (lowercased, trimmed) and sanitized to `[a-z0-9_-]` (every
+  other character, including `.`/`*`/`>`/whitespace, becomes `_`), giving
+  the plain sanitized username as the identity (e.g. `jdoe`) — no prefix or
+  suffix.
 - The device ID file is created beneath
   `%LOCALAPPDATA%\DesktopNotificationAgent\device-id`, unless overridden by
   `NOTIFY_DEVICE_ID`/the settings file's `deviceId`.
@@ -326,15 +325,15 @@ selection between them at startup.
   `Win32::Security::Authentication::Identity` module) with
   `NameSamCompatible` to resolve the SAM-compatible, domain-qualified name
   format (`DOMAIN\username`, or `MACHINENAME\username` when not
-  domain-joined) so that two identically-named accounts in different domains
-  resolve to different identities, falling back to the plain Win32
-  `GetUserNameW` (`advapi32.dll`) if `GetUserNameExW` fails or returns an
-  empty string. The resolved name is then lowercased and sanitized (replacing
-  `.`, `*`, `>`, whitespace, the `\` separator, and any other character
-  outside `[a-z0-9_-]` with `_`, then appending a hash suffix of the
-  pre-sanitization value) before it reaches subject construction — the same
-  validated-username identity exception as the C#/Go Windows heads; see
-  `contracts-and-invariants.md`.
+  domain-joined), falling back to the plain Win32 `GetUserNameW`
+  (`advapi32.dll`) if `GetUserNameExW` fails or returns an empty string.
+  Either way, only the portion after the last `\` is used — the domain/machine
+  qualifier is discarded, since deployments using this Windows head are
+  expected to guarantee account-name uniqueness themselves. The account name
+  is then lowercased and sanitized (replacing `.`, `*`, `>`, whitespace, and
+  any other character outside `[a-z0-9_-]` with `_`) before it reaches
+  subject construction — the same validated-username identity exception as
+  the C#/Go Windows heads; see `contracts-and-invariants.md`.
 - `rust/notify-agent-windows/assets/app.ico` (embedded via `icon.rc`/`build.rs`)
   is a copy of the repo-root canonical `assets/app.ico`, matching the C#/Go
   Windows heads; do not regenerate it independently — see commit 9f58508 on why
@@ -379,8 +378,9 @@ selection between them at startup.
   `DOMAIN\username` (or `MACHINENAME\username`) form, falling back to the
   plain Win32 `GetUserNameW` (`advapi32.dll`, via the same raw
   `NewLazySystemDLL`/`NewProc` pattern `aumid.go` uses for `shell32.dll`) if
-  `GetUserNameEx` fails — rather than an environment variable — see the
-  identity bullet above and `contracts-and-invariants.md`.
+  `GetUserNameEx` fails — rather than an environment variable. Either way,
+  only the account name after the domain/machine separator is used as the
+  identity — see the identity bullet above and `contracts-and-invariants.md`.
 - The Go Windows head logs via the standard library `log/slog` (text handler,
   stderr), covering identity resolution, NATS connect/subscribe, render
   failures, queue-full/bucket-overflow drops, and tray lifecycle events

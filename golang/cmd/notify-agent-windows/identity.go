@@ -5,9 +5,10 @@
 // This file has no `//go:build windows` constraint: the GetUserNameEx call
 // (SAM-compatible, domain-qualified name) and the identity.Provider
 // implementation that uses it live in identity_windows.go, but the
-// username -> "u_{...}" transformation and its NATS-subject-safety validation
-// are pure string logic with no Windows-specific dependency, so they stay
-// here, testable on any platform -- same split as toastscript.go/settings.go.
+// username-to-identity transformation and its NATS-subject-safety
+// validation are pure string logic with no Windows-specific dependency, so
+// they stay here, testable on any platform -- same split as
+// toastscript.go/settings.go.
 //
 // Using the Windows account name as identity is a deliberate, documented,
 // Windows-heads-only exception to this product's general "OS account name
@@ -18,31 +19,20 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
 )
 
-// userIDFromWindowsUsername normalizes a raw Windows username (as returned
-// by GetUserNameEx's SAM-compatible format, "DOMAIN\username" or
-// "MACHINENAME\username") into this product's "u_{...}" identity shape --
-// lowercased, matching the shape other identity sources in this product use
-// (e.g. "u_{oid}" for AAD) -- sanitized to be safe to embed in a NATS
-// subject, and suffixed with a short hash of the normalized
-// (pre-sanitization) username so the mapping stays injective
-// (collision-resistant).
-//
-// The domain (or machine name, when not domain-joined) qualifier is
-// deliberately kept, not stripped: two identically-named accounts in
-// different domains (e.g. "CORP\jdoe" and "CONTOSO\jdoe") must resolve to
-// different identities, not collide onto the same one. The sanitize step
-// below already handles this with no special-casing -- the backslash is just
-// another character outside [a-z0-9_-] and becomes '_' like any other, so
-// "CORP\jdoe" and "CONTOSO\jdoe" sanitize to visibly different strings
-// ("corp_jdoe" vs "contoso_jdoe"), and the hash suffix is computed over the
-// full domain-qualified string, so it differs too.
+// userIDFromWindowsUsername normalizes a raw Windows username -- whether
+// bare ("username", GetUserNameW's format) or domain-qualified
+// ("DOMAIN\username"/"MACHINENAME\username", GetUserNameEx's SAM-compatible
+// format) -- into this product's identity shape: just the plain,
+// lowercased, sanitized account name, with any domain/machine qualifier
+// dropped. Deployments using this Windows head are expected to guarantee
+// account-name uniqueness themselves (e.g. a single domain, or names that
+// don't collide across domains/machines); this function does not attempt to
+// disambiguate on their behalf.
 //
 // Windows account names are not under this product's control and commonly
 // contain characters a NATS subject can't safely carry -- a space ("John
@@ -53,28 +43,24 @@ import (
 // with no way to run the agent at all. So, unlike a resolved user ID from an
 // arbitrary source (which internal/host.ValidateUserIDForSubject rejects
 // outright as a final safety net), a raw OS username is sanitized instead --
-// replacing every character outside [a-z0-9_-] with '_'.
-//
-// Sanitization alone would be lossy: two genuinely different usernames can
-// sanitize to the identical string (e.g. "user.name" and "user_name" both
-// sanitize to "user_name"), which would collide two different users onto one
-// identity/NATS subject. To stay injective, the first 8 hex characters of
-// SHA-256(normalized username) are appended as a suffix -- computed from the
-// normalized string *before* sanitization, so two inputs that sanitize
-// identically still get different hashes and therefore different final user
-// IDs. This exact algorithm (sanitize + hash-of-normalized suffix, domain
-// retained) is shared verbatim across this product's C# and Rust
-// Windows-head implementations; keep them in sync if this changes.
+// replacing every character outside [a-z0-9_-] with '_'. This exact
+// algorithm (strip domain, sanitize) is shared verbatim across this
+// product's C# and Rust Windows-head implementations; keep them in sync if
+// this changes.
 func userIDFromWindowsUsername(raw string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	if normalized == "" {
 		return "", fmt.Errorf("windows username %q is empty", raw)
 	}
 
-	sanitized := sanitizeForIdentity(normalized)
-	sum := sha256.Sum256([]byte(normalized))
-	hash8 := hex.EncodeToString(sum[:4])
-	return fmt.Sprintf("u_%s_%s", sanitized, hash8), nil
+	if idx := strings.LastIndex(normalized, `\`); idx != -1 {
+		normalized = normalized[idx+1:]
+	}
+	if normalized == "" {
+		return "", fmt.Errorf("windows username %q has no account name after the domain separator", raw)
+	}
+
+	return sanitizeForIdentity(normalized), nil
 }
 
 // sanitizeForIdentity replaces every rune outside the lowercase-alphanumeric
